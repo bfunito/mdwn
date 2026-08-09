@@ -245,8 +245,8 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
         if (texture->texture && texture->width > 0 && texture->height > 0) {
             SDL_FRect dst;
 
-            dst.x = pen_x + g->x_offset + (float)texture->left;
-            dst.y = pen_y - g->y_offset - (float)texture->top;
+            dst.x = roundf(pen_x + g->x_offset + (float)texture->left);
+            dst.y = roundf(pen_y - g->y_offset - (float)texture->top);
             dst.w = (float)texture->width;
             dst.h = (float)texture->height;
 
