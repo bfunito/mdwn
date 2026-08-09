@@ -753,16 +753,26 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
             memcpy(prefix, "\xe2\x80\xa2", 3);
             prefix[3] = '\0';
             prefix_len = 3;
+            prefix_style.size_px = (ctx->theme->text_size_px * 4 + 2) / 3;
+            prefix_style.line_height =
+                (float)ctx->theme->text_size_px
+                * ctx->theme->list_line_height_scale
+                / (float)prefix_style.size_px;
         }
 
         if (prefix_len > 0) {
             struct inline_flow flow;
+            struct mdwn_draw_item *marker;
+
             if (flow_init(&flow, ctx, x, item_y, indent - 6.0f,
                           prefix_style, true) < 0)
                 return y;
             if (flow_place_token(&flow, prefix, (size_t)prefix_len,
                                  prefix_style, false) < 0)
                 return y;
+
+            marker = ctx->layout->last;
+            marker->as.text.x += flow.width - marker->as.text.width;
         }
 
         child = item->first_child;
