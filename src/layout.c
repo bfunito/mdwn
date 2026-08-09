@@ -250,7 +250,14 @@ flow_place_token(struct inline_flow *flow,
         return 0;
     }
 
-    baseline = flow->line_top + flow->baseline_offset;
+    if (style.code_background) {
+        baseline = flow->line_top
+            + (flow->line_height - mdwn_font_ascender(font)
+               - mdwn_font_descender(font)) * 0.5f
+            + mdwn_font_ascender(font);
+    } else {
+        baseline = flow->line_top + flow->baseline_offset;
+    }
     text_x = flow->x + padding;
 
     if (flow->emit && style.code_background)
