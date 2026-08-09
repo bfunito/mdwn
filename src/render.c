@@ -70,6 +70,42 @@ set_draw_color(SDL_Renderer *renderer, struct mdwn_color color)
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
 }
 
+static bool
+fill_rounded_rect(SDL_Renderer *renderer, const SDL_FRect *rect, float radius)
+{
+    SDL_FRect middle;
+    int rows;
+    int i;
+
+    radius = fminf(radius, fminf(rect->w, rect->h) * 0.5f);
+    if (radius < 1.0f)
+        return SDL_RenderFillRect(renderer, rect);
+
+    middle.x = rect->x;
+    middle.y = rect->y + radius;
+    middle.w = rect->w;
+    middle.h = rect->h - radius * 2.0f;
+    if (middle.h > 0.0f && !SDL_RenderFillRect(renderer, &middle))
+        return false;
+
+    rows = (int)ceilf(radius);
+    for (i = 0; i < rows; ++i) {
+        float offset_y = (float)i + 0.5f;
+        float distance = fmaxf(radius - offset_y, 0.0f);
+        float inset = radius - sqrtf(radius * radius - distance * distance);
+        float x1 = rect->x + inset;
+        float x2 = rect->x + rect->w - inset;
+        float y1 = rect->y + offset_y;
+        float y2 = rect->y + rect->h - offset_y;
+
+        if (!SDL_RenderLine(renderer, x1, y1, x2, y1))
+            return false;
+        if (y2 != y1 && !SDL_RenderLine(renderer, x1, y2, x2, y2))
+            return false;
+    }
+    return true;
+}
+
 static void
 glyph_cache_destroy(struct glyph_cache *cache)
 {
@@ -344,7 +380,8 @@ render_frame(struct viewer *viewer)
             if (rect.y + rect.h < 0.0f || rect.y > (float)viewer->height)
                 break;
             set_draw_color(viewer->renderer, item->as.rect.color);
-            if (!SDL_RenderFillRect(viewer->renderer, &rect)) {
+            if (!fill_rounded_rect(viewer->renderer, &rect,
+                                   item->as.rect.radius)) {
                 set_sdl_error(viewer, "could not render rectangle");
                 return -1;
             }
@@ -545,7 +582,7 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     (void)SDL_RenderClear(viewer.renderer);
     SDL_RenderPresent(viewer.renderer);
 
-    if (mdwn_font_system_create(&viewer.fonts, err, err_size) < 0) {
+    if (mdwn_font_system_create(&viewer.fonts, theme, err, err_size) < 0) {
         viewer_cleanup(&viewer);
         return -1;
     }

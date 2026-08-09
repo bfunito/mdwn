@@ -2,6 +2,7 @@
 
 #include "document.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,8 +20,10 @@ struct build_context {
 struct inline_style {
     enum mdwn_font_family family;
     unsigned size_px;
+    float line_height;
     bool bold;
     bool italic;
+    bool heading;
     bool strike;
     bool underline;
     bool code_background;
@@ -37,6 +40,7 @@ struct inline_flow {
     float line_top;
     float line_height;
     float baseline_offset;
+    float max_width;
     bool emit;
     bool has_content;
 };
@@ -75,8 +79,9 @@ new_item(struct build_context *ctx, enum mdwn_draw_type type)
 }
 
 static void
-add_rect(struct build_context *ctx, float x, float y, float w, float h,
-         struct mdwn_color color)
+add_rect_with_radius(struct build_context *ctx,
+                     float x, float y, float w, float h, float radius,
+                     struct mdwn_color color)
 {
     struct mdwn_draw_item *item;
 
@@ -91,7 +96,15 @@ add_rect(struct build_context *ctx, float x, float y, float w, float h,
     item->as.rect.y = y;
     item->as.rect.w = w;
     item->as.rect.h = h;
+    item->as.rect.radius = radius;
     item->as.rect.color = color;
+}
+
+static void
+add_rect(struct build_context *ctx, float x, float y, float w, float h,
+         struct mdwn_color color)
+{
+    add_rect_with_radius(ctx, x, y, w, h, 0.0f, color);
 }
 
 static void
@@ -132,7 +145,6 @@ style_line_height(struct build_context *ctx, struct inline_style style,
                   float *baseline_offset)
 {
     struct mdwn_font *font = font_for_style(ctx, style);
-    float natural;
     float line_height;
     float ascender;
     float descender;
@@ -140,9 +152,7 @@ style_line_height(struct build_context *ctx, struct inline_style style,
     if (!font)
         return 0.0f;
 
-    natural = mdwn_font_line_height(font);
-    line_height = fmaxf(natural,
-                        (float)style.size_px * ctx->theme->line_height_scale);
+    line_height = (float)style.size_px * style.line_height;
     ascender = mdwn_font_ascender(font);
     descender = mdwn_font_descender(font);
     *baseline_offset = (line_height - ascender - descender) * 0.5f + ascender;
@@ -168,6 +178,7 @@ flow_init(struct inline_flow *flow, struct build_context *ctx,
 static void
 flow_newline(struct inline_flow *flow)
 {
+    flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
     flow->line_top += flow->line_height;
     flow->x = flow->x0;
     flow->has_content = false;
@@ -183,6 +194,11 @@ flow_place_token(struct inline_flow *flow,
     struct mdwn_shaped_glyph *glyphs = NULL;
     size_t glyph_count = 0;
     float width = 0.0f;
+    float padding = style.code_background
+        ? flow->ctx->theme->inline_code_padding
+        : 0.0f;
+    float advance;
+    float text_x;
     float baseline;
     struct mdwn_draw_item *item;
 
@@ -211,22 +227,26 @@ flow_place_token(struct inline_flow *flow,
         }
     }
 
+    advance = width + padding * 2.0f;
+
     if (!is_space && flow->has_content &&
-        flow->x + width > flow->x0 + flow->width) {
+        flow->x + advance > flow->x0 + flow->width) {
         flow_newline(flow);
     }
 
-    if (is_space && flow->x + width > flow->x0 + flow->width) {
+    if (is_space && flow->x + advance > flow->x0 + flow->width) {
         flow_newline(flow);
         return 0;
     }
 
     baseline = flow->line_top + flow->baseline_offset;
+    text_x = flow->x + padding;
 
     if (flow->emit && style.code_background)
-        add_rect(flow->ctx, flow->x - 2.0f, flow->line_top + 2.0f,
-                 width + 4.0f, flow->line_height - 4.0f,
-                 flow->ctx->theme->code_background);
+        add_rect_with_radius(flow->ctx, flow->x, flow->line_top + 2.0f,
+                             advance, flow->line_height - 4.0f,
+                             flow->ctx->theme->border_radius,
+                             flow->ctx->theme->inline_code_background);
 
     if (flow->emit && glyph_count) {
         item = new_item(flow->ctx, MDWN_DRAW_TEXT);
@@ -236,7 +256,7 @@ flow_place_token(struct inline_flow *flow,
         item->as.text.font = font;
         item->as.text.glyphs = glyphs;
         item->as.text.glyph_count = glyph_count;
-        item->as.text.x = flow->x;
+        item->as.text.x = text_x;
         item->as.text.baseline = baseline;
         item->as.text.width = width;
         item->as.text.line_height = flow->line_height;
@@ -245,7 +265,8 @@ flow_place_token(struct inline_flow *flow,
         item->as.text.underline = style.underline;
     }
 
-    flow->x += width;
+    flow->x += advance;
+    flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
     if (!is_space)
         flow->has_content = true;
     return flow->ctx->failed ? -1 : 0;
@@ -316,12 +337,13 @@ layout_inline_node(struct inline_flow *flow, const struct mdwn_node *node,
         break;
     case MDWN_NODE_CODE_SPAN:
         style.family = MDWN_FONT_MONO;
+        if (!style.heading)
+            style.size_px = flow->ctx->theme->code_size_px;
         style.code_background = true;
         style.preserve_spaces = true;
         break;
     case MDWN_NODE_LINK:
         style.color = flow->ctx->theme->link;
-        style.underline = true;
         break;
     case MDWN_NODE_IMAGE:
         style.italic = true;
@@ -362,14 +384,34 @@ layout_inline_box(struct build_context *ctx, const struct mdwn_node *container,
     return (flow.line_top - flow.top) + flow.line_height;
 }
 
+static float
+measure_inline_width(struct build_context *ctx,
+                     const struct mdwn_node *container,
+                     struct inline_style base)
+{
+    struct inline_flow flow;
+    const struct mdwn_node *child;
+
+    if (flow_init(&flow, ctx, 0.0f, 0.0f, FLT_MAX, base, false) < 0)
+        return 0.0f;
+
+    for (child = container->first_child; child; child = child->next) {
+        if (layout_inline_node(&flow, child, base) < 0)
+            return 0.0f;
+    }
+
+    return flow.max_width;
+}
+
 static struct inline_style
-make_style(unsigned size_px, struct mdwn_color color)
+make_style(struct build_context *ctx, unsigned size_px, struct mdwn_color color)
 {
     struct inline_style style;
 
     memset(&style, 0, sizeof(style));
     style.family = MDWN_FONT_SANS;
     style.size_px = size_px;
+    style.line_height = ctx->theme->text_line_height_scale;
     style.color = color;
     return style;
 }
@@ -528,7 +570,7 @@ static float
 layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                        float x, float width, float y, bool html)
 {
-    struct inline_style style = make_style(ctx->theme->code_size_px,
+    struct inline_style style = make_style(ctx, ctx->theme->code_size_px,
         html ? ctx->theme->muted : ctx->theme->text);
     struct mdwn_font *font;
     char *text;
@@ -555,13 +597,16 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     if (!font)
         return y;
 
-    line_height = fmaxf(mdwn_font_line_height(font),
-                        ctx->theme->code_line_height);
+    line_height = (float)style.size_px
+        * ctx->theme->code_line_height_scale;
     baseline_offset = (line_height - mdwn_font_ascender(font) -
                        mdwn_font_descender(font)) * 0.5f + mdwn_font_ascender(font);
-    box_height = 24.0f + line_height * (float)lines;
+    box_height = ctx->theme->code_block_padding * 2.0f
+        + line_height * (float)lines;
 
-    add_rect(ctx, x, y, width, box_height, ctx->theme->code_background);
+    add_rect_with_radius(ctx, x, y, width, box_height,
+                         ctx->theme->border_radius,
+                         ctx->theme->code_background);
 
     start = 0;
     {
@@ -579,10 +624,12 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                 return y;
 
             if (expanded_len) {
-                float baseline = y + 12.0f + baseline_offset +
+                float baseline = y + ctx->theme->code_block_padding
+                    + baseline_offset +
                                  line_height * (float)line_index;
                 if (add_direct_text(ctx, expanded, expanded_len, style,
-                                    x + 12.0f, baseline, line_height) < 0)
+                                    x + ctx->theme->code_block_padding,
+                                    baseline, line_height) < 0)
                     return y;
             }
 
@@ -593,7 +640,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
         }
     }
 
-    return y + box_height + 16.0f;
+    return y + box_height + ctx->theme->block_spacing;
 }
 
 static float layout_block(struct build_context *, const struct mdwn_node *,
@@ -624,9 +671,10 @@ static float
 layout_inline_sequence(struct build_context *ctx,
                        const struct mdwn_node **node,
                        float x, float y, float width,
-                       struct mdwn_color color, bool compact)
+                       struct mdwn_color color)
 {
-    struct inline_style style = make_style(ctx->theme->text_size_px, color);
+    struct inline_style style = make_style(
+        ctx, ctx->theme->text_size_px, color);
     struct inline_flow flow;
     const struct mdwn_node *child = *node;
 
@@ -644,8 +692,7 @@ layout_inline_sequence(struct build_context *ctx,
 
     return y
         + (flow.line_top - flow.top)
-        + flow.line_height
-        + (compact ? 4.0f : 16.0f);
+        + flow.line_height;
 }
 
 static float
@@ -655,18 +702,17 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
     const struct mdwn_node *item;
     unsigned index = list->as.list.start;
     bool ordered = list->type == MDWN_NODE_ORDERED_LIST;
-
-    y += 2.0f;
+    bool nested = list->parent && list->parent->type == MDWN_NODE_LIST_ITEM;
 
     for (item = list->first_child; item; item = item->next) {
         const struct mdwn_node *child;
         char prefix[32];
         int prefix_len;
         struct inline_style prefix_style = make_style(
-            ctx->theme->text_size_px, color);
+            ctx, ctx->theme->text_size_px, color);
         float item_y = y;
         float child_y = item_y;
-        float indent = 30.0f;
+        float indent = ctx->theme->list_indent;
 
         if (item->type != MDWN_NODE_LIST_ITEM)
             continue;
@@ -703,8 +749,7 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
                     x + indent,
                     child_y,
                     width - indent,
-                    color,
-                    list->as.list.tight
+                    color
                 );
             } else {
                 child_y = layout_block(
@@ -724,12 +769,17 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
                 return y;
         }
 
-        if (child_y < item_y + 24.0f)
-            child_y = item_y + 24.0f;
-        y = child_y + (list->as.list.tight ? 0.0f : 3.0f);
+        if (child_y < item_y + (float)ctx->theme->text_size_px
+                                * ctx->theme->text_line_height_scale) {
+            child_y = item_y + (float)ctx->theme->text_size_px
+                               * ctx->theme->text_line_height_scale;
+        }
+        y = child_y;
+        if (item->next)
+            y += ctx->theme->list_item_spacing;
     }
 
-    return y + 8.0f;
+    return y + (nested ? 0.0f : ctx->theme->block_spacing);
 }
 
 static unsigned
@@ -748,69 +798,129 @@ count_row_cells(const struct mdwn_node *row)
 
 static float
 layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
-                 unsigned columns, float x, float width, float y)
+                 unsigned columns, const float *col_widths,
+                 unsigned row_index, float x, float table_width, float y)
 {
     const struct mdwn_node *cell;
     unsigned col = 0;
-    float col_width = width / (float)columns;
-    float row_height = 34.0f;
+    float padding_x = ctx->theme->table_cell_padding_x;
+    float padding_y = ctx->theme->table_cell_padding_y;
+    float row_height = 0.0f;
+    float cx = x;
 
     for (cell = row->first_child; cell && col < columns; cell = cell->next) {
         struct inline_style style;
+        float col_width;
         float h;
 
         if (cell->type != MDWN_NODE_TABLE_CELL &&
             cell->type != MDWN_NODE_TABLE_HEADER_CELL)
             continue;
 
-        style = make_style(ctx->theme->table_size_px, ctx->theme->text);
+        col_width = col_widths[col];
+        style = make_style(ctx, ctx->theme->table_size_px, ctx->theme->text);
         style.bold = cell->type == MDWN_NODE_TABLE_HEADER_CELL;
         h = layout_inline_box(ctx, cell, 0.0f, 0.0f,
-                              fmaxf(col_width - 16.0f, 1.0f), style, false);
-        row_height = fmaxf(row_height, h + 16.0f);
+                              fmaxf(col_width - padding_x * 2.0f, 1.0f),
+                              style, false);
+        row_height = fmaxf(row_height, h + padding_y * 2.0f);
         ++col;
     }
+
+    if (row_index % 2 == 0)
+        add_rect(ctx, x, y, table_width, row_height,
+                 ctx->theme->table_alt_background);
 
     col = 0;
     for (cell = row->first_child; cell && col < columns; cell = cell->next) {
         struct inline_style style;
-        float cx;
+        float col_width;
+        float content_width;
+        float content_x;
 
         if (cell->type != MDWN_NODE_TABLE_CELL &&
             cell->type != MDWN_NODE_TABLE_HEADER_CELL)
             continue;
 
-        cx = x + col_width * (float)col;
-        if (cell->type == MDWN_NODE_TABLE_HEADER_CELL)
-            add_rect(ctx, cx, y, col_width, row_height,
-                     ctx->theme->table_header_background);
-
+        col_width = col_widths[col];
         add_line(ctx, cx, y, cx + col_width, y, ctx->theme->border);
         add_line(ctx, cx, y, cx, y + row_height, ctx->theme->border);
 
-        style = make_style(ctx->theme->table_size_px, ctx->theme->text);
+        style = make_style(ctx, ctx->theme->table_size_px, ctx->theme->text);
         style.bold = cell->type == MDWN_NODE_TABLE_HEADER_CELL;
-        (void)layout_inline_box(ctx, cell, cx + 8.0f, y + 8.0f,
-                                fmaxf(col_width - 16.0f, 1.0f), style, true);
+        content_width = fmaxf(col_width - padding_x * 2.0f, 1.0f);
+        content_x = cx + padding_x;
+        if (cell->as.table_cell.align != MDWN_ALIGN_DEFAULT &&
+            cell->as.table_cell.align != MDWN_ALIGN_LEFT) {
+            float text_width = fminf(
+                measure_inline_width(ctx, cell, style), content_width);
+            float free_width = content_width - text_width;
+
+            if (cell->as.table_cell.align == MDWN_ALIGN_CENTER)
+                content_x += free_width * 0.5f;
+            else if (cell->as.table_cell.align == MDWN_ALIGN_RIGHT)
+                content_x += free_width;
+        }
+        (void)layout_inline_box(ctx, cell, content_x, y + padding_y,
+                               content_width,
+                               style, true);
+        cx += col_width;
         ++col;
     }
 
-    add_line(ctx, x + width, y, x + width, y + row_height,
+    add_line(ctx, x + table_width, y,
+             x + table_width, y + row_height,
              ctx->theme->border);
-    add_line(ctx, x, y + row_height, x + width, y + row_height,
+    add_line(ctx, x, y + row_height,
+             x + table_width, y + row_height,
              ctx->theme->border);
     return y + row_height;
 }
 
 static float
+measure_table_row_widths(struct build_context *ctx,
+                         const struct mdwn_node *row,
+                         unsigned columns, float *col_widths)
+{
+    const struct mdwn_node *cell;
+    unsigned col = 0;
+    float total = 0.0f;
+
+    for (cell = row->first_child; cell && col < columns; cell = cell->next) {
+        struct inline_style style;
+        float width;
+
+        if (cell->type != MDWN_NODE_TABLE_CELL &&
+            cell->type != MDWN_NODE_TABLE_HEADER_CELL)
+            continue;
+
+        style = make_style(ctx, ctx->theme->table_size_px, ctx->theme->text);
+        style.bold = cell->type == MDWN_NODE_TABLE_HEADER_CELL;
+        width = measure_inline_width(ctx, cell, style)
+            + ctx->theme->table_cell_padding_x * 2.0f;
+        col_widths[col] = fmaxf(col_widths[col], width);
+        ++col;
+    }
+
+    for (col = 0; col < columns; ++col)
+        total += col_widths[col];
+    return total;
+}
+
+static float
 layout_table_section(struct build_context *ctx, const struct mdwn_node *section,
-                     unsigned columns, float x, float width, float y)
+                     unsigned columns, const float *col_widths,
+                     float x, float table_width, float y)
 {
     const struct mdwn_node *row;
+    unsigned row_index = 1;
 
     for (row = section->first_child; row; row = row->next) {
-        if (row->type == MDWN_NODE_TABLE_ROW)
-            y = layout_table_row(ctx, row, columns, x, width, y);
+        if (row->type == MDWN_NODE_TABLE_ROW) {
+            y = layout_table_row(ctx, row, columns, col_widths,
+                                 row_index, x, table_width, y);
+            ++row_index;
+        }
     }
     return y;
 }
@@ -820,7 +930,11 @@ layout_table(struct build_context *ctx, const struct mdwn_node *table,
              float x, float width, float y)
 {
     const struct mdwn_node *section;
+    float *col_widths;
+    float table_width = 0.0f;
     unsigned columns = table->as.table.columns;
+    unsigned row_index = 1;
+    unsigned col;
 
     if (columns == 0) {
         for (section = table->first_child; section && columns == 0; section = section->next) {
@@ -834,16 +948,74 @@ layout_table(struct build_context *ctx, const struct mdwn_node *table,
     if (columns == 0)
         return y;
 
-    y += 4.0f;
+    col_widths = mdwn_arena_alloc(&ctx->layout->arena,
+                                  columns * sizeof(*col_widths));
+    if (!col_widths) {
+        set_error(ctx, "out of memory while measuring table");
+        return y;
+    }
+    memset(col_widths, 0, columns * sizeof(*col_widths));
+
+    for (section = table->first_child; section; section = section->next) {
+        if (section->type == MDWN_NODE_TABLE_HEAD ||
+            section->type == MDWN_NODE_TABLE_BODY) {
+            const struct mdwn_node *row;
+            for (row = section->first_child; row; row = row->next) {
+                if (row->type == MDWN_NODE_TABLE_ROW)
+                    table_width = measure_table_row_widths(
+                        ctx, row, columns, col_widths);
+            }
+        } else if (section->type == MDWN_NODE_TABLE_ROW) {
+            table_width = measure_table_row_widths(
+                ctx, section, columns, col_widths);
+        }
+    }
+
+    if (table_width <= 0.0f)
+        return y;
+    if (table_width > width) {
+        float scale = width / table_width;
+        table_width = width;
+        for (col = 0; col < columns; ++col)
+            col_widths[col] *= scale;
+    }
+
     for (section = table->first_child; section; section = section->next) {
         if (section->type == MDWN_NODE_TABLE_HEAD ||
             section->type == MDWN_NODE_TABLE_BODY)
-            y = layout_table_section(ctx, section, columns, x, width, y);
+            y = layout_table_section(ctx, section, columns, col_widths,
+                                     x, table_width, y);
         else if (section->type == MDWN_NODE_TABLE_ROW)
-            y = layout_table_row(ctx, section, columns, x, width, y);
+            y = layout_table_row(ctx, section, columns, col_widths,
+                                 row_index++, x, table_width, y);
     }
 
-    return y + 16.0f;
+    return y + ctx->theme->block_spacing;
+}
+
+static float
+block_bottom_margin(struct build_context *ctx, const struct mdwn_node *node,
+                    bool compact)
+{
+    switch (node->type) {
+    case MDWN_NODE_PARAGRAPH:
+        return compact ? 0.0f : ctx->theme->block_spacing;
+    case MDWN_NODE_HORIZONTAL_RULE:
+        return ctx->theme->rule_margin;
+    case MDWN_NODE_HEADING:
+    case MDWN_NODE_BLOCKQUOTE:
+    case MDWN_NODE_CODE_BLOCK:
+    case MDWN_NODE_RAW_HTML_BLOCK:
+    case MDWN_NODE_TABLE:
+        return ctx->theme->block_spacing;
+    case MDWN_NODE_UNORDERED_LIST:
+    case MDWN_NODE_ORDERED_LIST:
+        return node->parent && node->parent->type == MDWN_NODE_LIST_ITEM
+            ? 0.0f
+            : ctx->theme->block_spacing;
+    default:
+        return 0.0f;
+    }
 }
 
 static float
@@ -857,9 +1029,10 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
 
     switch (node->type) {
     case MDWN_NODE_PARAGRAPH: {
-        struct inline_style style = make_style(ctx->theme->text_size_px, color);
+        struct inline_style style = make_style(
+            ctx, ctx->theme->text_size_px, color);
         float h = layout_inline_box(ctx, node, x, y, width, style, true);
-        return y + h + (compact ? 4.0f : 16.0f);
+        return y + h + (compact ? 0.0f : ctx->theme->block_spacing);
     }
 
     case MDWN_NODE_HEADING: {
@@ -871,36 +1044,49 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
         if (level < 1 || level > 6)
             level = 1;
 
-        y += 10.0f;
-        style = make_style(ctx->theme->heading_size_px[level - 1], color);
+        if (node != node->parent->first_child) {
+            y += fmaxf(ctx->theme->heading_margin_top
+                       - ctx->theme->block_spacing, 0.0f);
+        }
+        if (level == 6)
+            color = ctx->theme->muted;
+        style = make_style(
+            ctx, ctx->theme->heading_size_px[level - 1], color);
+        style.line_height = ctx->theme->heading_line_height_scale;
         style.bold = true;
+        style.heading = true;
         h = layout_inline_box(ctx, node, x, y, width, style, true);
         y += h;
 
         if (level <= 2) {
-            border_y = y + 7.0f;
+            border_y = y + (float)style.size_px
+                * ctx->theme->heading_padding_bottom_em;
             add_line(ctx, x, border_y, x + width, border_y,
-                     ctx->theme->border);
-            y = border_y + 11.0f;
-        } else {
-            y += 12.0f;
+                     ctx->theme->border_muted);
+            y = border_y + 1.0f;
         }
-        return y;
+        return y + ctx->theme->heading_margin_bottom;
     }
 
     case MDWN_NODE_BLOCKQUOTE: {
-        float start = y + 2.0f;
+        float start = y;
         float child_y = start;
-        float inner_x = x + 18.0f;
-        float inner_width = fmaxf(width - 18.0f, 1.0f);
+        float border_width = (float)ctx->theme->text_size_px * 0.25f;
+        float inner_x = x + border_width + ctx->theme->blockquote_padding;
+        float inner_width = fmaxf(
+            width - border_width - ctx->theme->blockquote_padding * 2.0f,
+            1.0f);
 
         for (child = node->first_child; child; child = child->next)
             child_y = layout_block(ctx, child, inner_x, inner_width,
                                    child_y, ctx->theme->muted, false);
 
-        add_rect(ctx, x, start, 4.0f,
-                 fmaxf(child_y - start - 4.0f, 8.0f), ctx->theme->border);
-        return child_y + 6.0f;
+        if (node->last_child)
+            child_y -= block_bottom_margin(ctx, node->last_child, false);
+
+        add_rect(ctx, x, start, border_width,
+                 fmaxf(child_y - start, 1.0f), ctx->theme->border);
+        return child_y + ctx->theme->block_spacing;
     }
 
     case MDWN_NODE_UNORDERED_LIST:
@@ -908,15 +1094,19 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
         return layout_list(ctx, node, x, width, y, color);
 
     case MDWN_NODE_CODE_BLOCK:
-        return layout_code_like_block(ctx, node, x, width, y + 4.0f, false);
+        return layout_code_like_block(ctx, node, x, width, y, false);
 
     case MDWN_NODE_RAW_HTML_BLOCK:
-        return layout_code_like_block(ctx, node, x, width, y + 4.0f, true);
+        return layout_code_like_block(ctx, node, x, width, y, true);
 
     case MDWN_NODE_HORIZONTAL_RULE:
-        y += 10.0f;
-        add_line(ctx, x, y, x + width, y, ctx->theme->border);
-        return y + 20.0f;
+        if (node != node->parent->first_child) {
+            y += fmaxf(ctx->theme->rule_margin
+                       - ctx->theme->block_spacing, 0.0f);
+        }
+        add_rect(ctx, x, y, width, ctx->theme->rule_height,
+                 ctx->theme->border);
+        return y + ctx->theme->rule_height + ctx->theme->rule_margin;
 
     case MDWN_NODE_TABLE:
         return layout_table(ctx, node, x, width, y);
@@ -924,6 +1114,8 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
     case MDWN_NODE_DOCUMENT:
         for (child = node->first_child; child; child = child->next)
             y = layout_block(ctx, child, x, width, y, color, false);
+        if (node->last_child)
+            y -= block_bottom_margin(ctx, node->last_child, false);
         return y;
 
     case MDWN_NODE_LIST_ITEM:

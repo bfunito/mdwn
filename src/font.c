@@ -1,5 +1,7 @@
 #include "font.h"
 
+#include "theme.h"
+
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -24,13 +26,13 @@ struct mdwn_font {
     hb_font_t *hb_font;
     float ascender;
     float descender;
-    float line_height;
 };
 
 struct mdwn_font_system {
     FT_Library ft;
     struct font_source sources[2][2][2];
     struct mdwn_font *fonts;
+    const struct mdwn_theme *theme;
 };
 
 static void
@@ -64,6 +66,9 @@ resolve_source(struct mdwn_font_system *system,
     FcResult result;
     FcChar8 *file = NULL;
     int index = 0;
+    const char *const *family_names = family == MDWN_FONT_MONO
+        ? system->theme->mono_fonts
+        : system->theme->sans_fonts;
     const char *family_name = family == MDWN_FONT_MONO ? "monospace" : "sans-serif";
 
     if (source->resolved) {
@@ -75,9 +80,14 @@ resolve_source(struct mdwn_font_system *system,
     if (!pattern)
         goto oom;
 
-    if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family_name))
-        goto oom;
-    if (!FcPatternAddInteger(pattern, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR))
+    while (*family_names) {
+        if (!FcPatternAddString(pattern, FC_FAMILY,
+                                (const FcChar8 *)*family_names))
+            goto oom;
+        ++family_names;
+    }
+    if (!FcPatternAddInteger(pattern, FC_WEIGHT,
+                             bold ? FC_WEIGHT_DEMIBOLD : FC_WEIGHT_REGULAR))
         goto oom;
     if (!FcPatternAddInteger(pattern, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN))
         goto oom;
@@ -125,6 +135,7 @@ oom:
 
 int
 mdwn_font_system_create(struct mdwn_font_system **out,
+                        const struct mdwn_theme *theme,
                         char *err, size_t err_size)
 {
     struct mdwn_font_system *system;
@@ -143,6 +154,8 @@ mdwn_font_system_create(struct mdwn_font_system **out,
         FcFini();
         return -1;
     }
+
+    system->theme = theme;
 
     ft_error = FT_Init_FreeType(&system->ft);
     if (ft_error) {
@@ -252,9 +265,6 @@ mdwn_font_get(struct mdwn_font_system *system, struct mdwn_font_spec spec,
     font->spec = spec;
     font->ascender = (float)font->face->size->metrics.ascender / 64.0f;
     font->descender = -(float)font->face->size->metrics.descender / 64.0f;
-    font->line_height = (float)font->face->size->metrics.height / 64.0f;
-    if (font->line_height < font->ascender + font->descender)
-        font->line_height = font->ascender + font->descender;
 
     font->next = system->fonts;
     system->fonts = font;
@@ -271,12 +281,6 @@ float
 mdwn_font_descender(const struct mdwn_font *font)
 {
     return font->descender;
-}
-
-float
-mdwn_font_line_height(const struct mdwn_font *font)
-{
-    return font->line_height;
 }
 
 static int

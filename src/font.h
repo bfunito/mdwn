@@ -9,6 +9,7 @@
 
 struct mdwn_font_system;
 struct mdwn_font;
+struct mdwn_theme;
 
 enum mdwn_font_family {
     MDWN_FONT_SANS,
@@ -47,6 +48,7 @@ struct mdwn_glyph_bitmap {
 };
 
 int mdwn_font_system_create(struct mdwn_font_system **out,
+                            const struct mdwn_theme *theme,
                             char *err, size_t err_size);
 void mdwn_font_system_destroy(struct mdwn_font_system *system);
 
@@ -55,7 +57,6 @@ struct mdwn_font *mdwn_font_get(struct mdwn_font_system *system,
                                 char *err, size_t err_size);
 float mdwn_font_ascender(const struct mdwn_font *font);
 float mdwn_font_descender(const struct mdwn_font *font);
-float mdwn_font_line_height(const struct mdwn_font *font);
 
 int mdwn_font_measure(struct mdwn_font *font,
                       const char *text, size_t len,

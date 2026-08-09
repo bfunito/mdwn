@@ -37,6 +37,7 @@ struct mdwn_draw_item {
 
         struct {
             float x, y, w, h;
+            float radius;
             struct mdwn_color color;
         } rect;
 
