@@ -19,6 +19,7 @@ static const struct mdwn_flavor flavors[] = {
                         MD_FLAG_LATEXMATHSPANS |
                         MD_FLAG_WIKILINKS,
         .theme = &mdwn_theme_gitlab,
+        .dark_theme = &mdwn_theme_gitlab_dark,
     },
     {
         .name = "codeberg",
