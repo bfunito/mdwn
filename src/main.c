@@ -164,7 +164,8 @@ main(int argc, char **argv)
     }
 
     error[0] = '\0';
-    if (mdwn_viewer_run(title, &document, error, sizeof(error)) < 0) {
+    if (mdwn_viewer_run(title, &document, options.flavor->theme,
+                        error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "viewer failed");
         goto out;
     }

@@ -16,6 +16,7 @@ SRC = \
 	src/main.c \
 	src/arena.c \
 	src/file.c \
+	src/theme.c \
 	src/flavor.c \
 	src/document.c \
 	src/markdown.c \
@@ -24,7 +25,7 @@ SRC = \
 	src/render.c
 OBJ = $(SRC:.c=.o)
 
-TEST_SRC = test/markdown.c src/arena.c src/flavor.c src/document.c src/markdown.c
+TEST_SRC = test/markdown.c src/arena.c src/theme.c src/flavor.c src/document.c src/markdown.c
 TEST_BIN = test/markdown-test
 
 all: mdwn

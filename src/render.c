@@ -3,6 +3,7 @@
 #include "document.h"
 #include "font.h"
 #include "layout.h"
+#include "theme.h"
 
 #include <SDL3/SDL.h>
 
@@ -39,6 +40,7 @@ struct viewer {
     struct mdwn_layout layout;
     struct glyph_cache glyphs;
     const struct mdwn_document *doc;
+    const struct mdwn_theme *theme;
     float scroll_y;
     int width;
     int height;
@@ -322,7 +324,7 @@ static int
 render_frame(struct viewer *viewer)
 {
     const struct mdwn_draw_item *item;
-    struct mdwn_color background = mdwn_layout_background_color();
+    struct mdwn_color background = viewer->theme->background;
 
     set_draw_color(viewer->renderer, background);
     if (!SDL_RenderClear(viewer->renderer)) {
@@ -399,6 +401,7 @@ rebuild_layout(struct viewer *viewer)
     }
 
     if (mdwn_layout_build(&viewer->layout, viewer->doc, viewer->fonts,
+                          viewer->theme,
                           viewer->width, viewer->height,
                           viewer->err, viewer->err_size) < 0)
         return -1;
@@ -501,15 +504,17 @@ viewer_cleanup(struct viewer *viewer)
 
 int
 mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
+                const struct mdwn_theme *theme,
                 char *err, size_t err_size)
 {
     struct viewer viewer;
-    struct mdwn_color background = mdwn_layout_background_color();
+    struct mdwn_color background = theme->background;
     SDL_Event event;
     int rc = -1;
 
     memset(&viewer, 0, sizeof(viewer));
     viewer.doc = doc;
+    viewer.theme = theme;
     viewer.err = err;
     viewer.err_size = err_size;
     viewer.width = INITIAL_WIDTH;

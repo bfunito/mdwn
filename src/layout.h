@@ -3,17 +3,13 @@
 
 #include "arena.h"
 #include "font.h"
+#include "theme.h"
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 
 struct mdwn_document;
 struct mdwn_font_system;
-
-struct mdwn_color {
-    uint8_t r, g, b, a;
-};
 
 enum mdwn_draw_type {
     MDWN_DRAW_TEXT,
@@ -65,9 +61,8 @@ void mdwn_layout_destroy(struct mdwn_layout *layout);
 int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_document *doc,
                       struct mdwn_font_system *fonts,
+                      const struct mdwn_theme *theme,
                       int viewport_width, int viewport_height,
                       char *err, size_t err_size);
-
-struct mdwn_color mdwn_layout_background_color(void);
 
 #endif

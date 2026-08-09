@@ -1,5 +1,7 @@
 #include "flavor.h"
 
+#include "theme.h"
+
 #include <md4c.h>
 #include <stddef.h>
 #include <string.h>
@@ -8,6 +10,7 @@ static const struct mdwn_flavor flavors[] = {
     {
         .name = "github",
         .parser_flags = MD_DIALECT_GITHUB,
+        .theme = &mdwn_theme_github,
     },
 };
 

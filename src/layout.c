@@ -7,22 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MDWN_CONTENT_MAX_WIDTH 900.0f
-#define MDWN_OUTER_MARGIN 32.0f
-#define MDWN_TOP_MARGIN 36.0f
-#define MDWN_BOTTOM_MARGIN 40.0f
-
-static const struct mdwn_color COLOR_BACKGROUND = { 255, 255, 255, 255 };
-static const struct mdwn_color COLOR_TEXT       = {  31,  35,  40, 255 };
-static const struct mdwn_color COLOR_MUTED      = {  89,  99, 110, 255 };
-static const struct mdwn_color COLOR_LINK       = {   9, 105, 218, 255 };
-static const struct mdwn_color COLOR_BORDER     = { 208, 215, 222, 255 };
-static const struct mdwn_color COLOR_CODE_BG    = { 246, 248, 250, 255 };
-static const struct mdwn_color COLOR_TABLE_HEAD = { 246, 248, 250, 255 };
-
 struct build_context {
     struct mdwn_layout *layout;
     struct mdwn_font_system *fonts;
+    const struct mdwn_theme *theme;
     char *err;
     size_t err_size;
     int failed;
@@ -153,7 +141,8 @@ style_line_height(struct build_context *ctx, struct inline_style style,
         return 0.0f;
 
     natural = mdwn_font_line_height(font);
-    line_height = fmaxf(natural, (float)style.size_px * 1.45f);
+    line_height = fmaxf(natural,
+                        (float)style.size_px * ctx->theme->line_height_scale);
     ascender = mdwn_font_ascender(font);
     descender = mdwn_font_descender(font);
     *baseline_offset = (line_height - ascender - descender) * 0.5f + ascender;
@@ -236,7 +225,8 @@ flow_place_token(struct inline_flow *flow,
 
     if (flow->emit && style.code_background)
         add_rect(flow->ctx, flow->x - 2.0f, flow->line_top + 2.0f,
-                 width + 4.0f, flow->line_height - 4.0f, COLOR_CODE_BG);
+                 width + 4.0f, flow->line_height - 4.0f,
+                 flow->ctx->theme->code_background);
 
     if (flow->emit && glyph_count) {
         item = new_item(flow->ctx, MDWN_DRAW_TEXT);
@@ -330,16 +320,16 @@ layout_inline_node(struct inline_flow *flow, const struct mdwn_node *node,
         style.preserve_spaces = true;
         break;
     case MDWN_NODE_LINK:
-        style.color = COLOR_LINK;
+        style.color = flow->ctx->theme->link;
         style.underline = true;
         break;
     case MDWN_NODE_IMAGE:
         style.italic = true;
-        style.color = COLOR_MUTED;
+        style.color = flow->ctx->theme->muted;
         break;
     case MDWN_NODE_RAW_HTML_SPAN:
         style.family = MDWN_FONT_MONO;
-        style.color = COLOR_MUTED;
+        style.color = flow->ctx->theme->muted;
         style.size_px = style.size_px > 1 ? style.size_px - 1 : style.size_px;
         break;
     default:
@@ -538,7 +528,8 @@ static float
 layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                        float x, float width, float y, bool html)
 {
-    struct inline_style style = make_style(14, html ? COLOR_MUTED : COLOR_TEXT);
+    struct inline_style style = make_style(ctx->theme->code_size_px,
+        html ? ctx->theme->muted : ctx->theme->text);
     struct mdwn_font *font;
     char *text;
     size_t len;
@@ -564,12 +555,13 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     if (!font)
         return y;
 
-    line_height = fmaxf(mdwn_font_line_height(font), 20.0f);
+    line_height = fmaxf(mdwn_font_line_height(font),
+                        ctx->theme->code_line_height);
     baseline_offset = (line_height - mdwn_font_ascender(font) -
                        mdwn_font_descender(font)) * 0.5f + mdwn_font_ascender(font);
     box_height = 24.0f + line_height * (float)lines;
 
-    add_rect(ctx, x, y, width, box_height, COLOR_CODE_BG);
+    add_rect(ctx, x, y, width, box_height, ctx->theme->code_background);
 
     start = 0;
     {
@@ -634,7 +626,7 @@ layout_inline_sequence(struct build_context *ctx,
                        float x, float y, float width,
                        struct mdwn_color color, bool compact)
 {
-    struct inline_style style = make_style(16, color);
+    struct inline_style style = make_style(ctx->theme->text_size_px, color);
     struct inline_flow flow;
     const struct mdwn_node *child = *node;
 
@@ -670,7 +662,8 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
         const struct mdwn_node *child;
         char prefix[32];
         int prefix_len;
-        struct inline_style prefix_style = make_style(16, color);
+        struct inline_style prefix_style = make_style(
+            ctx->theme->text_size_px, color);
         float item_y = y;
         float child_y = item_y;
         float indent = 30.0f;
@@ -770,7 +763,7 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
             cell->type != MDWN_NODE_TABLE_HEADER_CELL)
             continue;
 
-        style = make_style(14, COLOR_TEXT);
+        style = make_style(ctx->theme->table_size_px, ctx->theme->text);
         style.bold = cell->type == MDWN_NODE_TABLE_HEADER_CELL;
         h = layout_inline_box(ctx, cell, 0.0f, 0.0f,
                               fmaxf(col_width - 16.0f, 1.0f), style, false);
@@ -789,20 +782,23 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
 
         cx = x + col_width * (float)col;
         if (cell->type == MDWN_NODE_TABLE_HEADER_CELL)
-            add_rect(ctx, cx, y, col_width, row_height, COLOR_TABLE_HEAD);
+            add_rect(ctx, cx, y, col_width, row_height,
+                     ctx->theme->table_header_background);
 
-        add_line(ctx, cx, y, cx + col_width, y, COLOR_BORDER);
-        add_line(ctx, cx, y, cx, y + row_height, COLOR_BORDER);
+        add_line(ctx, cx, y, cx + col_width, y, ctx->theme->border);
+        add_line(ctx, cx, y, cx, y + row_height, ctx->theme->border);
 
-        style = make_style(14, COLOR_TEXT);
+        style = make_style(ctx->theme->table_size_px, ctx->theme->text);
         style.bold = cell->type == MDWN_NODE_TABLE_HEADER_CELL;
         (void)layout_inline_box(ctx, cell, cx + 8.0f, y + 8.0f,
                                 fmaxf(col_width - 16.0f, 1.0f), style, true);
         ++col;
     }
 
-    add_line(ctx, x + width, y, x + width, y + row_height, COLOR_BORDER);
-    add_line(ctx, x, y + row_height, x + width, y + row_height, COLOR_BORDER);
+    add_line(ctx, x + width, y, x + width, y + row_height,
+             ctx->theme->border);
+    add_line(ctx, x, y + row_height, x + width, y + row_height,
+             ctx->theme->border);
     return y + row_height;
 }
 
@@ -861,13 +857,12 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
 
     switch (node->type) {
     case MDWN_NODE_PARAGRAPH: {
-        struct inline_style style = make_style(16, color);
+        struct inline_style style = make_style(ctx->theme->text_size_px, color);
         float h = layout_inline_box(ctx, node, x, y, width, style, true);
         return y + h + (compact ? 4.0f : 16.0f);
     }
 
     case MDWN_NODE_HEADING: {
-        static const unsigned sizes[] = { 0, 32, 24, 20, 18, 16, 16 };
         unsigned level = node->as.heading.level;
         struct inline_style style;
         float h;
@@ -877,14 +872,15 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
             level = 1;
 
         y += 10.0f;
-        style = make_style(sizes[level], color);
+        style = make_style(ctx->theme->heading_size_px[level - 1], color);
         style.bold = true;
         h = layout_inline_box(ctx, node, x, y, width, style, true);
         y += h;
 
         if (level <= 2) {
             border_y = y + 7.0f;
-            add_line(ctx, x, border_y, x + width, border_y, COLOR_BORDER);
+            add_line(ctx, x, border_y, x + width, border_y,
+                     ctx->theme->border);
             y = border_y + 11.0f;
         } else {
             y += 12.0f;
@@ -900,9 +896,10 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
 
         for (child = node->first_child; child; child = child->next)
             child_y = layout_block(ctx, child, inner_x, inner_width,
-                                   child_y, COLOR_MUTED, false);
+                                   child_y, ctx->theme->muted, false);
 
-        add_rect(ctx, x, start, 4.0f, fmaxf(child_y - start - 4.0f, 8.0f), COLOR_BORDER);
+        add_rect(ctx, x, start, 4.0f,
+                 fmaxf(child_y - start - 4.0f, 8.0f), ctx->theme->border);
         return child_y + 6.0f;
     }
 
@@ -918,7 +915,7 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
 
     case MDWN_NODE_HORIZONTAL_RULE:
         y += 10.0f;
-        add_line(ctx, x, y, x + width, y, COLOR_BORDER);
+        add_line(ctx, x, y, x + width, y, ctx->theme->border);
         return y + 20.0f;
 
     case MDWN_NODE_TABLE:
@@ -957,6 +954,7 @@ int
 mdwn_layout_build(struct mdwn_layout *layout,
                   const struct mdwn_document *doc,
                   struct mdwn_font_system *fonts,
+                  const struct mdwn_theme *theme,
                   int viewport_width, int viewport_height,
                   char *err, size_t err_size)
 {
@@ -977,31 +975,26 @@ mdwn_layout_build(struct mdwn_layout *layout,
     memset(&ctx, 0, sizeof(ctx));
     ctx.layout = layout;
     ctx.fonts = fonts;
+    ctx.theme = theme;
     ctx.err = err;
     ctx.err_size = err_size;
 
-    available = (float)viewport_width - MDWN_OUTER_MARGIN * 2.0f;
+    available = (float)viewport_width - theme->outer_margin * 2.0f;
     if (available < 64.0f)
         available = 64.0f;
-    content_width = fminf(available, MDWN_CONTENT_MAX_WIDTH);
+    content_width = fminf(available, theme->content_max_width);
     content_x = ((float)viewport_width - content_width) * 0.5f;
     if (content_x < 8.0f)
         content_x = 8.0f;
 
     y = layout_block(&ctx, doc->root, content_x, content_width,
-                     MDWN_TOP_MARGIN, COLOR_TEXT, false);
+                     theme->top_margin, theme->text, false);
 
     if (ctx.failed)
         return -1;
 
-    layout->content_height = y + MDWN_BOTTOM_MARGIN;
+    layout->content_height = y + theme->bottom_margin;
     if (layout->content_height < (float)viewport_height)
         layout->content_height = (float)viewport_height;
     return 0;
-}
-
-struct mdwn_color
-mdwn_layout_background_color(void)
-{
-    return COLOR_BACKGROUND;
 }
