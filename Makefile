@@ -22,6 +22,7 @@ SRC = \
 	src/markdown.c \
 	src/font.c \
 	src/layout.c \
+	src/selection.c \
 	src/render.c
 OBJ = $(SRC:.c=.o)
 
