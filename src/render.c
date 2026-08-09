@@ -20,7 +20,7 @@
 #define MIN_ZOOM 1.0f
 #define MAX_ZOOM 5.0f
 #define WHEEL_ZOOM_STEP 1.1f
-#define ZOOM_SENSITIVITY 0.05f
+#define WHEEL_ZOOM_SENSITIVITY 0.05f
 #define RASTER_ZOOM_STEP 0.25f
 
 struct glyph_texture {
@@ -50,6 +50,7 @@ struct viewer {
     const struct mdwn_theme *theme;
     float zoom;
     float raster_zoom;
+    float pinch_scale;
     float scroll_x;
     float scroll_y;
     int width;
@@ -732,7 +733,7 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         }
         if (modifiers & SDL_KMOD_CTRL) {
             zoom_at(viewer, powf(WHEEL_ZOOM_STEP,
-                                 dy * ZOOM_SENSITIVITY),
+                                 dy * WHEEL_ZOOM_SENSITIVITY),
                     event->wheel.mouse_x, event->wheel.mouse_y);
         } else {
             if (modifiers & SDL_KMOD_SHIFT) {
@@ -745,13 +746,23 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
     }
 
 #if SDL_MINOR_VERSION >= 4
+    case SDL_EVENT_PINCH_BEGIN:
+        viewer->pinch_scale = 1.0f;
+        break;
+
     case SDL_EVENT_PINCH_UPDATE: {
+        float factor = event->pinch.scale / viewer->pinch_scale;
         float x, y;
 
+        viewer->pinch_scale = event->pinch.scale;
         (void)SDL_GetMouseState(&x, &y);
-        zoom_at(viewer, powf(event->pinch.scale, ZOOM_SENSITIVITY), x, y);
+        zoom_at(viewer, factor, x, y);
         break;
     }
+
+    case SDL_EVENT_PINCH_END:
+        viewer->pinch_scale = 1.0f;
+        break;
 #endif
 
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -894,6 +905,7 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     viewer.theme = theme;
     viewer.zoom = 1.0f;
     viewer.raster_zoom = 1.0f;
+    viewer.pinch_scale = 1.0f;
     viewer.err = err;
     viewer.err_size = err_size;
     viewer.width = INITIAL_WIDTH;
