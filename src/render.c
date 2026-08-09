@@ -307,7 +307,7 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
 
     set_draw_color(viewer->renderer, color);
     if (item->as.text.strike) {
-        float y = item->as.text.baseline - viewer->scroll_y - item->as.text.line_height * 0.30f;
+        float y = item->as.text.baseline - viewer->scroll_y - item->as.text.line_height * 0.20f;
         if (!SDL_RenderLine(viewer->renderer, item->as.text.x, y,
                             item->as.text.x + item->as.text.width, y)) {
             set_sdl_error(viewer, "could not render strikethrough");
