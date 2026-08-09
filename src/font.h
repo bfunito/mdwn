@@ -19,7 +19,7 @@ enum mdwn_font_family {
 struct mdwn_font_spec {
     enum mdwn_font_family family;
     unsigned size_px;
-    bool bold;
+    unsigned weight;
     bool italic;
 };
 
@@ -57,11 +57,6 @@ struct mdwn_font *mdwn_font_get(struct mdwn_font_system *system,
                                 char *err, size_t err_size);
 float mdwn_font_ascender(const struct mdwn_font *font);
 float mdwn_font_descender(const struct mdwn_font *font);
-
-int mdwn_font_measure(struct mdwn_font *font,
-                      const char *text, size_t len,
-                      float *width,
-                      char *err, size_t err_size);
 
 int mdwn_font_shape(struct mdwn_font *font,
                     const char *text, size_t len,

@@ -13,12 +13,17 @@ struct mdwn_theme {
 
     struct mdwn_color background;
     struct mdwn_color text;
+    struct mdwn_color heading;
+    struct mdwn_color heading_small;
+    struct mdwn_color inline_code_text;
     struct mdwn_color muted;
     struct mdwn_color link;
     struct mdwn_color border;
     struct mdwn_color border_muted;
+    struct mdwn_color blockquote_border;
     struct mdwn_color inline_code_background;
     struct mdwn_color code_background;
+    struct mdwn_color code_border;
     struct mdwn_color table_alt_background;
 
     float content_max_width;
@@ -28,14 +33,22 @@ struct mdwn_theme {
     float text_line_height_scale;
     float heading_line_height_scale;
     float code_line_height_scale;
+    float list_line_height_scale;
+    float table_line_height_scale;
     float block_spacing;
-    float heading_margin_top;
+    float heading_margin_top[6];
+    float heading_letter_spacing_em[6];
     float heading_margin_bottom;
     float heading_padding_bottom_em;
     float border_radius;
     float inline_code_padding;
     float code_block_padding;
+    float code_border_width;
     float blockquote_padding;
+    float blockquote_padding_right;
+    float blockquote_padding_y;
+    float blockquote_border_width;
+    float blockquote_margin;
     float list_indent;
     float list_item_spacing;
     float rule_margin;
@@ -44,11 +57,16 @@ struct mdwn_theme {
     float table_cell_padding_y;
 
     unsigned text_size_px;
+    unsigned inline_code_size_px;
     unsigned code_size_px;
     unsigned table_size_px;
     unsigned heading_size_px[6];
+    unsigned strong_weight;
+    unsigned heading_weight;
+    unsigned table_header_weight;
 };
 
 extern const struct mdwn_theme mdwn_theme_github;
+extern const struct mdwn_theme mdwn_theme_gitlab;
 
 #endif

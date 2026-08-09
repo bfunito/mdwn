@@ -30,10 +30,20 @@ struct mdwn_font {
 
 struct mdwn_font_system {
     FT_Library ft;
-    struct font_source sources[2][2][2];
+    struct font_source sources[2][3][2];
     struct mdwn_font *fonts;
     const struct mdwn_theme *theme;
 };
+
+static size_t
+weight_index(unsigned weight)
+{
+    if (weight >= 700)
+        return 2;
+    if (weight >= 600)
+        return 1;
+    return 0;
+}
 
 static void
 set_error(char *err, size_t err_size, const char *message)
@@ -56,11 +66,12 @@ copy_string(const char *s)
 
 static int
 resolve_source(struct mdwn_font_system *system,
-               enum mdwn_font_family family, bool bold, bool italic,
+               enum mdwn_font_family family, unsigned weight, bool italic,
                struct font_source **out,
                char *err, size_t err_size)
 {
-    struct font_source *source = &system->sources[family][bold ? 1 : 0][italic ? 1 : 0];
+    struct font_source *source =
+        &system->sources[family][weight_index(weight)][italic ? 1 : 0];
     FcPattern *pattern = NULL;
     FcPattern *match = NULL;
     FcResult result;
@@ -87,7 +98,9 @@ resolve_source(struct mdwn_font_system *system,
         ++family_names;
     }
     if (!FcPatternAddInteger(pattern, FC_WEIGHT,
-                             bold ? FC_WEIGHT_DEMIBOLD : FC_WEIGHT_REGULAR))
+                             weight >= 700 ? FC_WEIGHT_BOLD :
+                             weight >= 600 ? FC_WEIGHT_DEMIBOLD :
+                                             FC_WEIGHT_REGULAR))
         goto oom;
     if (!FcPatternAddInteger(pattern, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN))
         goto oom;
@@ -173,7 +186,7 @@ mdwn_font_system_create(struct mdwn_font_system **out,
 void
 mdwn_font_system_destroy(struct mdwn_font_system *system)
 {
-    size_t family, bold, italic;
+    size_t family, weight, italic;
     struct mdwn_font *font;
 
     if (!system)
@@ -189,9 +202,9 @@ mdwn_font_system_destroy(struct mdwn_font_system *system)
     }
 
     for (family = 0; family < 2; ++family) {
-        for (bold = 0; bold < 2; ++bold) {
+        for (weight = 0; weight < 3; ++weight) {
             for (italic = 0; italic < 2; ++italic)
-                free(system->sources[family][bold][italic].path);
+                free(system->sources[family][weight][italic].path);
         }
     }
 
@@ -205,7 +218,7 @@ same_spec(struct mdwn_font_spec a, struct mdwn_font_spec b)
 {
     return a.family == b.family &&
            a.size_px == b.size_px &&
-           a.bold == b.bold &&
+           a.weight == b.weight &&
            a.italic == b.italic;
 }
 
@@ -227,7 +240,7 @@ mdwn_font_get(struct mdwn_font_system *system, struct mdwn_font_spec spec,
         return NULL;
     }
 
-    if (resolve_source(system, spec.family, spec.bold, spec.italic,
+    if (resolve_source(system, spec.family, spec.weight, spec.italic,
                        &source, err, err_size) < 0)
         return NULL;
 
@@ -351,16 +364,6 @@ shape_internal(struct mdwn_font *font,
     if (width_out)
         *width_out = width;
     return 0;
-}
-
-int
-mdwn_font_measure(struct mdwn_font *font,
-                  const char *text, size_t len,
-                  float *width,
-                  char *err, size_t err_size)
-{
-    return shape_internal(font, text, len, NULL, NULL, NULL,
-                          width, err, err_size);
 }
 
 int

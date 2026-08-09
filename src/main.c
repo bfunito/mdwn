@@ -22,7 +22,7 @@ usage(FILE *stream)
         "usage: mdwn [options] FILE\n"
         "\n"
         "Options:\n"
-        "  -f, --flavor NAME  markdown flavor (currently: github)\n"
+        "  -f, --flavor NAME  markdown flavor (github or gitlab)\n"
         "  -h, --help         show this help\n"
         "  -V, --version      show version\n");
 }
