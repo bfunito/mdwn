@@ -93,14 +93,17 @@ fill_rounded_rect(SDL_Renderer *renderer, const SDL_FRect *rect, float radius)
         float offset_y = (float)i + 0.5f;
         float distance = fmaxf(radius - offset_y, 0.0f);
         float inset = radius - sqrtf(radius * radius - distance * distance);
-        float x1 = rect->x + inset;
-        float x2 = rect->x + rect->w - inset;
-        float y1 = rect->y + offset_y;
-        float y2 = rect->y + rect->h - offset_y;
+        SDL_FRect row;
 
-        if (!SDL_RenderLine(renderer, x1, y1, x2, y1))
+        row.x = rect->x + inset;
+        row.y = rect->y + (float)i;
+        row.w = rect->w - inset * 2.0f;
+        row.h = 1.0f;
+        if (!SDL_RenderFillRect(renderer, &row))
             return false;
-        if (y2 != y1 && !SDL_RenderLine(renderer, x1, y2, x2, y2))
+
+        row.y = rect->y + rect->h - (float)i - 1.0f;
+        if (!SDL_RenderFillRect(renderer, &row))
             return false;
     }
     return true;
