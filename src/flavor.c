@@ -24,6 +24,7 @@ static const struct mdwn_flavor flavors[] = {
         .parser_flags = MD_DIALECT_GITHUB |
                         MD_FLAG_LATEXMATHSPANS,
         .theme = &mdwn_theme_codeberg,
+        .dark_theme = &mdwn_theme_codeberg_dark,
     },
 };
 

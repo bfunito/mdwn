@@ -7,6 +7,7 @@ struct mdwn_flavor {
     const char *name;
     unsigned parser_flags;
     const struct mdwn_theme *theme;
+    const struct mdwn_theme *dark_theme;
 };
 
 const struct mdwn_flavor *mdwn_flavor_default(void);

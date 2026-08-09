@@ -70,5 +70,6 @@ struct mdwn_theme {
 extern const struct mdwn_theme mdwn_theme_github;
 extern const struct mdwn_theme mdwn_theme_gitlab;
 extern const struct mdwn_theme mdwn_theme_codeberg;
+extern const struct mdwn_theme mdwn_theme_codeberg_dark;
 
 #endif
