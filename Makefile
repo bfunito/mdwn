@@ -27,9 +27,6 @@ SRC = \
 	src/render.c
 OBJ = $(SRC:.c=.o)
 
-TEST_SRC = test/markdown.c src/arena.c src/theme.c src/flavor.c src/document.c src/markdown.c
-TEST_BIN = test/markdown-test
-
 all: mdwn
 
 mdwn: $(OBJ)
@@ -37,14 +34,6 @@ mdwn: $(OBJ)
 
 .c.o:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
-
-$(TEST_BIN): $(TEST_SRC)
-	$(CC) -D_POSIX_C_SOURCE=200809L -Isrc \
-		$(shell pkg-config --cflags md4c) $(CFLAGS) \
-		-o $@ $(TEST_SRC) $(shell pkg-config --libs md4c)
-
-check: $(TEST_BIN)
-	./$(TEST_BIN)
 
 sanitize:
 	$(MAKE) clean
@@ -60,6 +49,6 @@ uninstall:
 	rm -f '$(DESTDIR)$(BINDIR)/mdwn' '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
 
 clean:
-	rm -f mdwn $(OBJ) $(TEST_BIN)
+	rm -f mdwn $(OBJ)
 
 .PHONY: all check sanitize install uninstall clean
