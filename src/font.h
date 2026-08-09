@@ -25,6 +25,7 @@ struct mdwn_font_spec {
 
 struct mdwn_shaped_glyph {
     uint32_t index;
+    uint32_t cluster;
     float x_advance;
     float y_advance;
     float x_offset;

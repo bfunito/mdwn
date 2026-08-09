@@ -348,6 +348,7 @@ shape_internal(struct mdwn_font *font,
 
         if (glyphs) {
             glyphs[i].index = infos[i].codepoint;
+            glyphs[i].cluster = infos[i].cluster;
             glyphs[i].x_advance = advance;
             glyphs[i].y_advance = (float)positions[i].y_advance / 64.0f;
             glyphs[i].x_offset = (float)positions[i].x_offset / 64.0f;

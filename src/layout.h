@@ -26,7 +26,11 @@ struct mdwn_draw_item {
             struct mdwn_font *font;
             struct mdwn_shaped_glyph *glyphs;
             size_t glyph_count;
+            const char *text;
+            size_t text_length;
+            size_t order;
             float x;
+            float top;
             float baseline;
             float width;
             float line_height;
@@ -52,6 +56,7 @@ struct mdwn_layout {
     struct mdwn_arena arena;
     struct mdwn_draw_item *first;
     struct mdwn_draw_item *last;
+    size_t text_count;
     float content_height;
     int viewport_width;
     int viewport_height;

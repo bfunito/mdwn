@@ -7,6 +7,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,12 +34,25 @@ struct glyph_cache {
     size_t capacity;
 };
 
+struct text_position {
+    const struct mdwn_draw_item *item;
+    size_t offset;
+};
+
+struct text_selection {
+    struct text_position anchor;
+    struct text_position focus;
+    bool valid;
+    bool dragging;
+};
+
 struct viewer {
     SDL_Window *window;
     SDL_Renderer *renderer;
     struct mdwn_font_system *fonts;
     struct mdwn_layout layout;
     struct glyph_cache glyphs;
+    struct text_selection selection;
     const struct mdwn_document *doc;
     const struct mdwn_theme *theme;
     float scroll_y;
@@ -49,6 +63,222 @@ struct viewer {
     char *err;
     size_t err_size;
 };
+
+static void set_sdl_error(struct viewer *, const char *);
+
+static int
+compare_positions(struct text_position a, struct text_position b)
+{
+    if (a.item->as.text.order < b.item->as.text.order)
+        return -1;
+    if (a.item->as.text.order > b.item->as.text.order)
+        return 1;
+    if (a.offset < b.offset)
+        return -1;
+    if (a.offset > b.offset)
+        return 1;
+    return 0;
+}
+
+static bool
+selection_range(const struct viewer *viewer,
+                struct text_position *start, struct text_position *end)
+{
+    if (!viewer->selection.valid ||
+        compare_positions(viewer->selection.anchor,
+                          viewer->selection.focus) == 0)
+        return false;
+
+    if (compare_positions(viewer->selection.anchor,
+                          viewer->selection.focus) < 0) {
+        *start = viewer->selection.anchor;
+        *end = viewer->selection.focus;
+    } else {
+        *start = viewer->selection.focus;
+        *end = viewer->selection.anchor;
+    }
+    return true;
+}
+
+static bool
+selected_text_range(const struct viewer *viewer,
+                    const struct mdwn_draw_item *item,
+                    size_t *start_offset, size_t *end_offset)
+{
+    struct text_position start, end;
+    size_t order = item->as.text.order;
+
+    if (!selection_range(viewer, &start, &end) ||
+        order < start.item->as.text.order ||
+        order > end.item->as.text.order)
+        return false;
+
+    *start_offset = order == start.item->as.text.order ? start.offset : 0;
+    *end_offset = order == end.item->as.text.order
+        ? end.offset
+        : item->as.text.text_length;
+    return *start_offset < *end_offset;
+}
+
+static float
+text_x_at(const struct mdwn_draw_item *item, size_t offset)
+{
+    float x = item->as.text.x;
+    size_t i;
+
+    for (i = 0; i < item->as.text.glyph_count; ++i) {
+        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
+
+        if (offset <= glyph->cluster)
+            break;
+        x += glyph->x_advance;
+    }
+    return x;
+}
+
+static size_t
+text_offset_at(const struct mdwn_draw_item *item, float x)
+{
+    float pen = item->as.text.x;
+    size_t i;
+
+    if (x <= pen)
+        return 0;
+
+    for (i = 0; i < item->as.text.glyph_count; ++i) {
+        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
+        float next = pen + glyph->x_advance;
+
+        if (x < (pen + next) * 0.5f)
+            return glyph->cluster < item->as.text.text_length
+                ? glyph->cluster
+                : item->as.text.text_length;
+        pen = next;
+    }
+    return item->as.text.text_length;
+}
+
+static bool
+find_text_position(const struct viewer *viewer, float x, float y,
+                   bool nearest, struct text_position *position)
+{
+    const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *best = NULL;
+    float document_y = y + viewer->scroll_y;
+    float best_dx = FLT_MAX;
+    float best_dy = FLT_MAX;
+
+    for (item = viewer->layout.first; item; item = item->next) {
+        float left, right, top, bottom;
+        float dx, dy;
+
+        if (item->type != MDWN_DRAW_TEXT)
+            continue;
+
+        left = item->as.text.x;
+        right = left + item->as.text.width;
+        top = item->as.text.top;
+        bottom = top + item->as.text.line_height;
+
+        dx = x < left ? left - x : x > right ? x - right : 0.0f;
+        dy = document_y < top ? top - document_y
+                              : document_y > bottom ? document_y - bottom : 0.0f;
+        if (!nearest && dy > 0.0f)
+            continue;
+
+        if (dy < best_dy || (dy == best_dy && dx < best_dx)) {
+            best = item;
+            best_dx = dx;
+            best_dy = dy;
+        }
+    }
+
+    if (!best)
+        return false;
+
+    position->item = best;
+    position->offset = text_offset_at(best, x);
+    return true;
+}
+
+static bool
+same_text_line(const struct mdwn_draw_item *a,
+               const struct mdwn_draw_item *b)
+{
+    return a->as.text.top < b->as.text.top + b->as.text.line_height &&
+           b->as.text.top < a->as.text.top + a->as.text.line_height;
+}
+
+static char *
+selected_text(const struct viewer *viewer)
+{
+    const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *previous = NULL;
+    size_t total = 0;
+    char *text, *dst;
+
+    for (item = viewer->layout.first; item; item = item->next) {
+        size_t start, end;
+
+        if (item->type != MDWN_DRAW_TEXT ||
+            !selected_text_range(viewer, item, &start, &end))
+            continue;
+        if (previous && !same_text_line(previous, item)) {
+            if (total == SIZE_MAX)
+                return NULL;
+            ++total;
+        }
+        if (end - start > SIZE_MAX - total)
+            return NULL;
+        total += end - start;
+        previous = item;
+    }
+
+    if (total == 0 || total == SIZE_MAX)
+        return NULL;
+
+    text = malloc(total + 1);
+    if (!text)
+        return NULL;
+
+    dst = text;
+    previous = NULL;
+    for (item = viewer->layout.first; item; item = item->next) {
+        size_t start, end;
+
+        if (item->type != MDWN_DRAW_TEXT ||
+            !selected_text_range(viewer, item, &start, &end))
+            continue;
+        if (previous && !same_text_line(previous, item))
+            *dst++ = '\n';
+        memcpy(dst, item->as.text.text + start, end - start);
+        dst += end - start;
+        previous = item;
+    }
+    *dst = '\0';
+    return text;
+}
+
+static int
+copy_selection(struct viewer *viewer, bool primary)
+{
+    char *text = selected_text(viewer);
+    bool copied;
+
+    if (!text)
+        return 0;
+
+    copied = primary
+        ? SDL_SetPrimarySelectionText(text)
+        : SDL_SetClipboardText(text);
+    free(text);
+
+    if (!copied) {
+        set_sdl_error(viewer, "could not copy selected text");
+        return -1;
+    }
+    return 0;
+}
 
 static void
 set_error(struct viewer *viewer, const char *message)
@@ -327,6 +557,37 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
 }
 
 static int
+draw_text_selection(struct viewer *viewer,
+                    const struct mdwn_draw_item *item)
+{
+    struct mdwn_color color = { 51, 132, 255, 110 };
+    size_t start, end;
+    float x1, x2;
+    SDL_FRect rect;
+
+    if (!selected_text_range(viewer, item, &start, &end))
+        return 0;
+
+    x1 = text_x_at(item, start);
+    x2 = text_x_at(item, end);
+    rect.x = fminf(x1, x2);
+    rect.y = item->as.text.top - viewer->scroll_y;
+    rect.w = fabsf(x2 - x1);
+    rect.h = item->as.text.line_height;
+
+    if (rect.w <= 0.0f || rect.y + rect.h < 0.0f ||
+        rect.y > (float)viewer->height)
+        return 0;
+
+    set_draw_color(viewer->renderer, color);
+    if (!SDL_RenderFillRect(viewer->renderer, &rect)) {
+        set_sdl_error(viewer, "could not render text selection");
+        return -1;
+    }
+    return 0;
+}
+
+static int
 draw_scrollbar(struct viewer *viewer)
 {
     float content = viewer->layout.content_height;
@@ -408,6 +669,8 @@ render_frame(struct viewer *viewer)
             if (item->as.text.baseline - viewer->scroll_y + item->as.text.line_height < 0.0f ||
                 item->as.text.baseline - viewer->scroll_y - item->as.text.line_height > (float)viewer->height)
                 break;
+            if (draw_text_selection(viewer, item) < 0)
+                return -1;
             if (draw_text(viewer, item) < 0)
                 return -1;
             break;
@@ -435,6 +698,9 @@ clamp_scroll(struct viewer *viewer)
 static int
 rebuild_layout(struct viewer *viewer)
 {
+    if (viewer->selection.dragging)
+        (void)SDL_CaptureMouse(false);
+
     if (!SDL_GetWindowSize(viewer->window, &viewer->width, &viewer->height)) {
         set_sdl_error(viewer, "could not query window size");
         return -1;
@@ -446,6 +712,8 @@ rebuild_layout(struct viewer *viewer)
                           viewer->err, viewer->err_size) < 0)
         return -1;
 
+    viewer->selection.valid = false;
+    viewer->selection.dragging = false;
     clamp_scroll(viewer);
     viewer->dirty = true;
     return 0;
@@ -459,6 +727,32 @@ scroll_by(struct viewer *viewer, float amount)
     clamp_scroll(viewer);
     if (viewer->scroll_y != old)
         viewer->dirty = true;
+}
+
+static void
+select_all(struct viewer *viewer)
+{
+    const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *first = NULL;
+    const struct mdwn_draw_item *last = NULL;
+
+    for (item = viewer->layout.first; item; item = item->next) {
+        if (item->type == MDWN_DRAW_TEXT) {
+            if (!first)
+                first = item;
+            last = item;
+        }
+    }
+
+    if (!first)
+        return;
+
+    viewer->selection.anchor.item = first;
+    viewer->selection.anchor.offset = 0;
+    viewer->selection.focus.item = last;
+    viewer->selection.focus.offset = last->as.text.text_length;
+    viewer->selection.valid = true;
+    viewer->dirty = true;
 }
 
 static int
@@ -488,7 +782,62 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         break;
     }
 
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (event->button.button == SDL_BUTTON_LEFT) {
+            struct text_position position;
+
+            if (find_text_position(viewer, event->button.x,
+                                   event->button.y, false, &position)) {
+                viewer->selection.anchor = position;
+                viewer->selection.focus = position;
+                viewer->selection.valid = true;
+                viewer->selection.dragging = true;
+                (void)SDL_CaptureMouse(true);
+            } else {
+                viewer->selection.valid = false;
+            }
+            viewer->dirty = true;
+        }
+        break;
+
+    case SDL_EVENT_MOUSE_MOTION:
+        if (viewer->selection.dragging) {
+            struct text_position position;
+
+            if (find_text_position(viewer, event->motion.x,
+                                   event->motion.y, true, &position)) {
+                viewer->selection.focus = position;
+                viewer->dirty = true;
+            }
+        }
+        break;
+
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (event->button.button == SDL_BUTTON_LEFT &&
+            viewer->selection.dragging) {
+            struct text_position position;
+
+            if (find_text_position(viewer, event->button.x,
+                                   event->button.y, true, &position))
+                viewer->selection.focus = position;
+            viewer->selection.dragging = false;
+            (void)SDL_CaptureMouse(false);
+            viewer->dirty = true;
+            if (copy_selection(viewer, true) < 0)
+                return -1;
+        }
+        break;
+
     case SDL_EVENT_KEY_DOWN:
+        if ((event->key.mod & SDL_KMOD_CTRL) && event->key.key == SDLK_C) {
+            if (copy_selection(viewer, false) < 0)
+                return -1;
+            break;
+        }
+        if ((event->key.mod & SDL_KMOD_CTRL) && event->key.key == SDLK_A) {
+            select_all(viewer);
+            break;
+        }
         switch (event->key.key) {
         case SDLK_ESCAPE:
         case SDLK_Q:

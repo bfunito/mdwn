@@ -267,14 +267,27 @@ flow_place_token(struct inline_flow *flow,
                              flow->ctx->theme->inline_code_background);
 
     if (flow->emit && glyph_count) {
+        char *stored_text;
+
         item = new_item(flow->ctx, MDWN_DRAW_TEXT);
         if (!item)
             return -1;
 
+        stored_text = mdwn_arena_alloc(&flow->ctx->layout->arena, len);
+        if (!stored_text) {
+            set_error(flow->ctx, "out of memory while storing text layout");
+            return -1;
+        }
+        memcpy(stored_text, text, len);
+
         item->as.text.font = font;
         item->as.text.glyphs = glyphs;
         item->as.text.glyph_count = glyph_count;
+        item->as.text.text = stored_text;
+        item->as.text.text_length = len;
+        item->as.text.order = flow->ctx->layout->text_count++;
         item->as.text.x = text_x;
+        item->as.text.top = flow->line_top;
         item->as.text.baseline = baseline;
         item->as.text.width = width;
         item->as.text.line_height = flow->line_height;
@@ -555,6 +568,7 @@ add_direct_text(struct build_context *ctx,
     size_t glyph_count;
     float width;
     struct mdwn_draw_item *item;
+    char *stored_text;
 
     if (!font)
         return -1;
@@ -573,10 +587,24 @@ add_direct_text(struct build_context *ctx,
     if (!item)
         return -1;
 
+    stored_text = mdwn_arena_alloc(&ctx->layout->arena, len);
+    if (!stored_text) {
+        set_error(ctx, "out of memory while storing text layout");
+        return -1;
+    }
+    memcpy(stored_text, text, len);
+
     item->as.text.font = font;
     item->as.text.glyphs = glyphs;
     item->as.text.glyph_count = glyph_count;
+    item->as.text.text = stored_text;
+    item->as.text.text_length = len;
+    item->as.text.order = ctx->layout->text_count++;
     item->as.text.x = x;
+    item->as.text.top = baseline
+        - (line_height - mdwn_font_ascender(font)
+           - mdwn_font_descender(font)) * 0.5f
+        - mdwn_font_ascender(font);
     item->as.text.baseline = baseline;
     item->as.text.width = width;
     item->as.text.line_height = line_height;
@@ -1229,6 +1257,7 @@ mdwn_layout_build(struct mdwn_layout *layout,
     mdwn_arena_init(&layout->arena, 64 * 1024);
     layout->first = NULL;
     layout->last = NULL;
+    layout->text_count = 0;
     layout->viewport_width = viewport_width;
     layout->viewport_height = viewport_height;
     layout->content_height = 0.0f;
