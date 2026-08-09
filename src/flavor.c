@@ -11,6 +11,7 @@ static const struct mdwn_flavor flavors[] = {
         .name = "github",
         .parser_flags = MD_DIALECT_GITHUB,
         .theme = &mdwn_theme_github,
+        .dark_theme = &mdwn_theme_github_dark,
     },
     {
         .name = "gitlab",
