@@ -21,6 +21,7 @@ SRC = \
 	src/document.c \
 	src/markdown.c \
 	src/font.c \
+	src/layout_inline.c \
 	src/layout.c \
 	src/selection.c \
 	src/render.c

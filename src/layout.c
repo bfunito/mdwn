@@ -1,61 +1,22 @@
 #include "layout.h"
 
-#include "document.h"
+#include "layout_internal.h"
 
-#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct build_context {
-    struct mdwn_layout *layout;
-    struct mdwn_font_system *fonts;
-    const struct mdwn_theme *theme;
-    char *err;
-    size_t err_size;
-    int failed;
-};
-
-struct inline_style {
-    enum mdwn_font_family family;
-    unsigned size_px;
-    unsigned weight;
-    float line_height;
-    float letter_spacing_em;
-    bool italic;
-    bool heading;
-    bool strike;
-    bool underline;
-    bool code_background;
-    bool preserve_spaces;
-    struct mdwn_color color;
-};
-
-struct inline_flow {
-    struct build_context *ctx;
-    float x0;
-    float width;
-    float x;
-    float top;
-    float line_top;
-    float line_height;
-    float baseline_offset;
-    float max_width;
-    bool emit;
-    bool has_content;
-};
-
-static void
-set_error(struct build_context *ctx, const char *message)
+void
+mdwn_layout_set_error(struct build_context *ctx, const char *message)
 {
     if (!ctx->failed && ctx->err && ctx->err_size)
         snprintf(ctx->err, ctx->err_size, "%s", message);
     ctx->failed = 1;
 }
 
-static struct mdwn_draw_item *
-new_item(struct build_context *ctx, enum mdwn_draw_type type)
+struct mdwn_draw_item *
+mdwn_layout_new_item(struct build_context *ctx, enum mdwn_draw_type type)
 {
     struct mdwn_draw_item *item;
 
@@ -64,7 +25,7 @@ new_item(struct build_context *ctx, enum mdwn_draw_type type)
 
     item = mdwn_arena_alloc(&ctx->layout->arena, sizeof(*item));
     if (!item) {
-        set_error(ctx, "out of memory while building layout");
+        mdwn_layout_set_error(ctx, "out of memory while building layout");
         return NULL;
     }
 
@@ -79,17 +40,17 @@ new_item(struct build_context *ctx, enum mdwn_draw_type type)
     return item;
 }
 
-static void
-add_rect_with_radius(struct build_context *ctx,
-                     float x, float y, float w, float h, float radius,
-                     struct mdwn_color color)
+void
+mdwn_layout_add_rect_with_radius(struct build_context *ctx,
+                                 float x, float y, float w, float h,
+                                 float radius, struct mdwn_color color)
 {
     struct mdwn_draw_item *item;
 
     if (w <= 0.0f || h <= 0.0f)
         return;
 
-    item = new_item(ctx, MDWN_DRAW_RECT);
+    item = mdwn_layout_new_item(ctx, MDWN_DRAW_RECT);
     if (!item)
         return;
 
@@ -105,14 +66,14 @@ static void
 add_rect(struct build_context *ctx, float x, float y, float w, float h,
          struct mdwn_color color)
 {
-    add_rect_with_radius(ctx, x, y, w, h, 0.0f, color);
+    mdwn_layout_add_rect_with_radius(ctx, x, y, w, h, 0.0f, color);
 }
 
 static void
 add_line(struct build_context *ctx, float x1, float y1, float x2, float y2,
          struct mdwn_color color)
 {
-    struct mdwn_draw_item *item = new_item(ctx, MDWN_DRAW_LINE);
+    struct mdwn_draw_item *item = mdwn_layout_new_item(ctx, MDWN_DRAW_LINE);
 
     if (!item)
         return;
@@ -124,8 +85,9 @@ add_line(struct build_context *ctx, float x1, float y1, float x2, float y2,
     item->as.line.color = color;
 }
 
-static struct mdwn_font *
-font_for_style(struct build_context *ctx, struct inline_style style)
+struct mdwn_font *
+mdwn_layout_font_for_style(struct build_context *ctx,
+                           struct inline_style style)
 {
     struct mdwn_font_spec spec;
     struct mdwn_font *font;
@@ -139,314 +101,6 @@ font_for_style(struct build_context *ctx, struct inline_style style)
     if (!font)
         ctx->failed = 1;
     return font;
-}
-
-static float
-style_line_height(struct build_context *ctx, struct inline_style style,
-                  float *baseline_offset)
-{
-    struct mdwn_font *font = font_for_style(ctx, style);
-    float line_height;
-    float ascender;
-    float descender;
-
-    if (!font)
-        return 0.0f;
-
-    line_height = (float)style.size_px * style.line_height;
-    ascender = mdwn_font_ascender(font);
-    descender = mdwn_font_descender(font);
-    *baseline_offset = (line_height - ascender - descender) * 0.5f + ascender;
-    return line_height;
-}
-
-static int
-flow_init(struct inline_flow *flow, struct build_context *ctx,
-          float x, float y, float width, struct inline_style base, bool emit)
-{
-    memset(flow, 0, sizeof(*flow));
-    flow->ctx = ctx;
-    flow->x0 = x;
-    flow->width = fmaxf(width, 1.0f);
-    flow->x = x;
-    flow->top = y;
-    flow->line_top = y;
-    flow->emit = emit;
-    flow->line_height = style_line_height(ctx, base, &flow->baseline_offset);
-    return ctx->failed ? -1 : 0;
-}
-
-static void
-flow_newline(struct inline_flow *flow)
-{
-    flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
-    flow->line_top += flow->line_height;
-    flow->x = flow->x0;
-    flow->has_content = false;
-}
-
-static int
-flow_place_token(struct inline_flow *flow,
-                 const char *text, size_t len,
-                 struct inline_style style,
-                 bool is_space)
-{
-    struct mdwn_font *font;
-    struct mdwn_shaped_glyph *glyphs = NULL;
-    size_t glyph_count = 0;
-    float width = 0.0f;
-    float padding = style.code_background
-        ? flow->ctx->theme->inline_code_padding
-        : 0.0f;
-    float advance;
-    float text_x;
-    float baseline;
-    struct mdwn_draw_item *item;
-
-    if (len == 0 || flow->ctx->failed)
-        return flow->ctx->failed ? -1 : 0;
-
-    if (is_space && !flow->has_content)
-        return 0;
-
-    font = font_for_style(flow->ctx, style);
-    if (!font)
-        return -1;
-
-    if (flow->emit) {
-        if (mdwn_font_shape(font, text, len, &flow->ctx->layout->arena,
-                            &glyphs, &glyph_count, &width,
-                            flow->ctx->err, flow->ctx->err_size) < 0) {
-            flow->ctx->failed = 1;
-            return -1;
-        }
-    } else {
-        if (mdwn_font_shape(font, text, len, NULL, NULL, &glyph_count,
-                            &width,
-                            flow->ctx->err, flow->ctx->err_size) < 0) {
-            flow->ctx->failed = 1;
-            return -1;
-        }
-    }
-
-    if (glyph_count && style.letter_spacing_em != 0.0f) {
-        float spacing = style.letter_spacing_em * (float)style.size_px;
-        size_t i;
-
-        width += spacing * (float)glyph_count;
-        for (i = 0; glyphs && i < glyph_count; ++i)
-            glyphs[i].x_advance += spacing;
-    }
-
-    advance = width + padding * 2.0f;
-
-    if (!is_space && flow->has_content &&
-        flow->x + advance > flow->x0 + flow->width) {
-        flow_newline(flow);
-    }
-
-    if (is_space && flow->x + advance > flow->x0 + flow->width) {
-        flow_newline(flow);
-        return 0;
-    }
-
-    if (style.code_background) {
-        baseline = flow->line_top
-            + (flow->line_height - mdwn_font_ascender(font)
-               - mdwn_font_descender(font)) * 0.5f
-            + mdwn_font_ascender(font);
-    } else {
-        baseline = flow->line_top + flow->baseline_offset;
-    }
-    text_x = flow->x + padding;
-
-    if (flow->emit && style.code_background)
-        add_rect_with_radius(flow->ctx, flow->x, flow->line_top + 2.0f,
-                             advance, flow->line_height - 4.0f,
-                             flow->ctx->theme->border_radius,
-                             flow->ctx->theme->inline_code_background);
-
-    if (flow->emit && glyph_count) {
-        char *stored_text;
-
-        item = new_item(flow->ctx, MDWN_DRAW_TEXT);
-        if (!item)
-            return -1;
-
-        stored_text = mdwn_arena_alloc(&flow->ctx->layout->arena, len);
-        if (!stored_text) {
-            set_error(flow->ctx, "out of memory while storing text layout");
-            return -1;
-        }
-        memcpy(stored_text, text, len);
-
-        item->as.text.font = font;
-        item->as.text.glyphs = glyphs;
-        item->as.text.glyph_count = glyph_count;
-        item->as.text.text = stored_text;
-        item->as.text.text_length = len;
-        item->as.text.order = flow->ctx->layout->text_count++;
-        item->as.text.x = text_x;
-        item->as.text.top = flow->line_top;
-        item->as.text.baseline = baseline;
-        item->as.text.width = width;
-        item->as.text.line_height = flow->line_height;
-        item->as.text.color = style.color;
-        item->as.text.strike = style.strike;
-        item->as.text.underline = style.underline;
-    }
-
-    flow->x += advance;
-    flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
-    if (!is_space)
-        flow->has_content = true;
-    return flow->ctx->failed ? -1 : 0;
-}
-
-static int
-flow_text(struct inline_flow *flow, const char *text, size_t len,
-          struct inline_style style)
-{
-    size_t i = 0;
-
-    if (style.preserve_spaces)
-        return flow_place_token(flow, text, len, style, false);
-
-    while (i < len) {
-        size_t start;
-
-        if (text[i] == '\n' || text[i] == '\r') {
-            if (text[i] == '\r' && i + 1 < len && text[i + 1] == '\n')
-                ++i;
-            flow_newline(flow);
-            ++i;
-            continue;
-        }
-
-        if (text[i] == ' ' || text[i] == '\t') {
-            while (i < len && (text[i] == ' ' || text[i] == '\t'))
-                ++i;
-            if (flow_place_token(flow, " ", 1, style, true) < 0)
-                return -1;
-            continue;
-        }
-
-        start = i;
-        while (i < len && text[i] != ' ' && text[i] != '\t' &&
-               text[i] != '\n' && text[i] != '\r')
-            ++i;
-
-        if (flow_place_token(flow, text + start, i - start, style, false) < 0)
-            return -1;
-    }
-
-    return 0;
-}
-
-static int
-layout_inline_node(struct inline_flow *flow, const struct mdwn_node *node,
-                   struct inline_style style)
-{
-    const struct mdwn_node *child;
-
-    switch (node->type) {
-    case MDWN_NODE_TEXT:
-        return flow_text(flow, node->as.text.data, node->as.text.length, style);
-    case MDWN_NODE_SOFT_BREAK:
-        return flow_place_token(flow, " ", 1, style, true);
-    case MDWN_NODE_HARD_BREAK:
-        flow_newline(flow);
-        return 0;
-    case MDWN_NODE_EMPHASIS:
-        style.italic = true;
-        break;
-    case MDWN_NODE_STRONG:
-        style.weight = flow->ctx->theme->strong_weight;
-        break;
-    case MDWN_NODE_STRIKETHROUGH:
-        style.strike = true;
-        break;
-    case MDWN_NODE_CODE_SPAN:
-        style.family = MDWN_FONT_MONO;
-        if (!style.heading)
-            style.size_px = flow->ctx->theme->inline_code_size_px;
-        style.color = flow->ctx->theme->inline_code_text;
-        style.code_background = true;
-        style.preserve_spaces = true;
-        break;
-    case MDWN_NODE_LINK:
-        style.color = flow->ctx->theme->link;
-        break;
-    case MDWN_NODE_IMAGE:
-        style.italic = true;
-        style.color = flow->ctx->theme->muted;
-        break;
-    case MDWN_NODE_RAW_HTML_SPAN:
-        style.family = MDWN_FONT_MONO;
-        style.color = flow->ctx->theme->muted;
-        style.size_px = style.size_px > 1 ? style.size_px - 1 : style.size_px;
-        break;
-    default:
-        break;
-    }
-
-    for (child = node->first_child; child; child = child->next) {
-        if (layout_inline_node(flow, child, style) < 0)
-            return -1;
-    }
-    return 0;
-}
-
-static float
-layout_inline_box(struct build_context *ctx, const struct mdwn_node *container,
-                  float x, float y, float width,
-                  struct inline_style base, bool emit)
-{
-    struct inline_flow flow;
-    const struct mdwn_node *child;
-
-    if (flow_init(&flow, ctx, x, y, width, base, emit) < 0)
-        return 0.0f;
-
-    for (child = container->first_child; child; child = child->next) {
-        if (layout_inline_node(&flow, child, base) < 0)
-            return 0.0f;
-    }
-
-    return (flow.line_top - flow.top) + flow.line_height;
-}
-
-static float
-measure_inline_width(struct build_context *ctx,
-                     const struct mdwn_node *container,
-                     struct inline_style base)
-{
-    struct inline_flow flow;
-    const struct mdwn_node *child;
-
-    if (flow_init(&flow, ctx, 0.0f, 0.0f, FLT_MAX, base, false) < 0)
-        return 0.0f;
-
-    for (child = container->first_child; child; child = child->next) {
-        if (layout_inline_node(&flow, child, base) < 0)
-            return 0.0f;
-    }
-
-    return flow.max_width;
-}
-
-static struct inline_style
-make_style(struct build_context *ctx, unsigned size_px, struct mdwn_color color)
-{
-    struct inline_style style;
-
-    memset(&style, 0, sizeof(style));
-    style.family = MDWN_FONT_SANS;
-    style.size_px = size_px;
-    style.weight = 400;
-    style.line_height = ctx->theme->text_line_height_scale;
-    style.color = color;
-    return style;
 }
 
 static size_t
@@ -495,13 +149,13 @@ gather_text(struct build_context *ctx, const struct mdwn_node *node, size_t *len
     size_t n = text_length_recursive(node);
 
     if (n == SIZE_MAX) {
-        set_error(ctx, "text block is too large");
+        mdwn_layout_set_error(ctx, "text block is too large");
         return NULL;
     }
 
     text = mdwn_arena_alloc(&ctx->layout->arena, n + 1);
     if (!text) {
-        set_error(ctx, "out of memory while building text block");
+        mdwn_layout_set_error(ctx, "out of memory while building text block");
         return NULL;
     }
 
@@ -529,13 +183,13 @@ expand_tabs(struct build_context *ctx, const char *line, size_t len, size_t *out
     }
 
     if (tabs > (SIZE_MAX - len - 1) / 3) {
-        set_error(ctx, "code line is too large");
+        mdwn_layout_set_error(ctx, "code line is too large");
         return NULL;
     }
 
     out = mdwn_arena_alloc(&ctx->layout->arena, len + tabs * 3 + 1);
     if (!out) {
-        set_error(ctx, "out of memory while expanding tabs");
+        mdwn_layout_set_error(ctx, "out of memory while expanding tabs");
         return NULL;
     }
 
@@ -563,7 +217,7 @@ add_direct_text(struct build_context *ctx,
                 struct inline_style style,
                 float x, float baseline, float line_height)
 {
-    struct mdwn_font *font = font_for_style(ctx, style);
+    struct mdwn_font *font = mdwn_layout_font_for_style(ctx, style);
     struct mdwn_shaped_glyph *glyphs;
     size_t glyph_count;
     float width;
@@ -583,13 +237,13 @@ add_direct_text(struct build_context *ctx,
     if (glyph_count == 0)
         return 0;
 
-    item = new_item(ctx, MDWN_DRAW_TEXT);
+    item = mdwn_layout_new_item(ctx, MDWN_DRAW_TEXT);
     if (!item)
         return -1;
 
     stored_text = mdwn_arena_alloc(&ctx->layout->arena, len);
     if (!stored_text) {
-        set_error(ctx, "out of memory while storing text layout");
+        mdwn_layout_set_error(ctx, "out of memory while storing text layout");
         return -1;
     }
     memcpy(stored_text, text, len);
@@ -618,7 +272,8 @@ static float
 layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                        float x, float width, float y, bool html)
 {
-    struct inline_style style = make_style(ctx, ctx->theme->code_size_px,
+    struct inline_style style = mdwn_layout_make_style(
+        ctx, ctx->theme->code_size_px,
         html ? ctx->theme->muted : ctx->theme->text);
     struct mdwn_font *font;
     char *text;
@@ -642,7 +297,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     if (len && text[len - 1] == '\n' && lines > 1)
         --lines;
 
-    font = font_for_style(ctx, style);
+    font = mdwn_layout_font_for_style(ctx, style);
     if (!font)
         return y;
 
@@ -655,15 +310,16 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
         + line_height * (float)lines;
 
     if (border > 0.0f) {
-        add_rect_with_radius(ctx, x, y, width, box_height,
-                             ctx->theme->border_radius,
-                             ctx->theme->code_border);
+        mdwn_layout_add_rect_with_radius(ctx, x, y, width, box_height,
+                                         ctx->theme->border_radius,
+                                         ctx->theme->code_border);
     }
-    add_rect_with_radius(ctx, x + border, y + border,
-                         width - border * 2.0f,
-                         box_height - border * 2.0f,
-                         fmaxf(ctx->theme->border_radius - border, 0.0f),
-                         ctx->theme->code_background);
+    mdwn_layout_add_rect_with_radius(
+        ctx, x + border, y + border,
+        width - border * 2.0f,
+        box_height - border * 2.0f,
+        fmaxf(ctx->theme->border_radius - border, 0.0f),
+        ctx->theme->code_background);
 
     start = 0;
     {
@@ -703,57 +359,6 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
 static float layout_block(struct build_context *, const struct mdwn_node *,
                           float, float, float, struct mdwn_color, bool);
 
-static bool
-is_inline_node(const struct mdwn_node *node)
-{
-    switch (node->type) {
-    case MDWN_NODE_EMPHASIS:
-    case MDWN_NODE_STRONG:
-    case MDWN_NODE_LINK:
-    case MDWN_NODE_IMAGE:
-    case MDWN_NODE_CODE_SPAN:
-    case MDWN_NODE_STRIKETHROUGH:
-    case MDWN_NODE_RAW_HTML_SPAN:
-    case MDWN_NODE_TEXT:
-    case MDWN_NODE_SOFT_BREAK:
-    case MDWN_NODE_HARD_BREAK:
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-static float
-layout_inline_sequence(struct build_context *ctx,
-                       const struct mdwn_node **node,
-                       float x, float y, float width,
-                       struct mdwn_color color, float line_height)
-{
-    struct inline_style style = make_style(
-        ctx, ctx->theme->text_size_px, color);
-    struct inline_flow flow;
-    const struct mdwn_node *child = *node;
-
-    style.line_height = line_height;
-
-    if (flow_init(&flow, ctx, x, y, width, style, true) < 0)
-        return y;
-
-    while (child && is_inline_node(child)) {
-        if (layout_inline_node(&flow, child, style) < 0)
-            return y;
-
-        child = child->next;
-    }
-
-    *node = child;
-
-    return y
-        + (flow.line_top - flow.top)
-        + flow.line_height;
-}
-
 static float
 layout_list(struct build_context *ctx, const struct mdwn_node *list,
             float x, float width, float y, struct mdwn_color color)
@@ -767,7 +372,7 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
         const struct mdwn_node *child;
         char prefix[32];
         int prefix_len;
-        struct inline_style prefix_style = make_style(
+        struct inline_style prefix_style = mdwn_layout_make_style(
             ctx, ctx->theme->text_size_px, color);
         float item_y = y;
         float child_y = item_y;
@@ -795,26 +400,17 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
                 / (float)prefix_style.size_px;
         }
 
-        if (prefix_len > 0) {
-            struct inline_flow flow;
-            struct mdwn_draw_item *marker;
-
-            if (flow_init(&flow, ctx, x, item_y, indent - 6.0f,
-                          prefix_style, true) < 0)
-                return y;
-            if (flow_place_token(&flow, prefix, (size_t)prefix_len,
-                                 prefix_style, false) < 0)
-                return y;
-
-            marker = ctx->layout->last;
-            marker->as.text.x += flow.width - marker->as.text.width;
-        }
+        if (prefix_len > 0 &&
+            mdwn_layout_inline_text_right(
+                ctx, prefix, (size_t)prefix_len,
+                x, item_y, indent - 6.0f, prefix_style) < 0)
+            return y;
 
         child = item->first_child;
 
         while (child) {
-            if (is_inline_node(child)) {
-                child_y = layout_inline_sequence(
+            if (mdwn_layout_is_inline_node(child)) {
+                child_y = mdwn_layout_inline_sequence(
                     ctx,
                     &child,
                     x + indent,
@@ -890,16 +486,18 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
             continue;
 
         col_width = col_widths[col];
-        style = make_style(ctx, ctx->theme->table_size_px,
-                           cell->type == MDWN_NODE_TABLE_HEADER_CELL
-                               ? ctx->theme->heading
-                               : ctx->theme->text);
+        style = mdwn_layout_make_style(
+            ctx, ctx->theme->table_size_px,
+            cell->type == MDWN_NODE_TABLE_HEADER_CELL
+                ? ctx->theme->heading
+                : ctx->theme->text);
         style.line_height = ctx->theme->table_line_height_scale;
         if (cell->type == MDWN_NODE_TABLE_HEADER_CELL)
             style.weight = ctx->theme->table_header_weight;
-        h = layout_inline_box(ctx, cell, 0.0f, 0.0f,
-                              fmaxf(col_width - padding_x * 2.0f, 1.0f),
-                              style, false);
+        h = mdwn_layout_inline_box(
+            ctx, cell, 0.0f, 0.0f,
+            fmaxf(col_width - padding_x * 2.0f, 1.0f),
+            style, false);
         row_height = fmaxf(row_height, h + padding_y * 2.0f);
         ++col;
     }
@@ -923,10 +521,11 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
         add_line(ctx, cx, y, cx + col_width, y, ctx->theme->border);
         add_line(ctx, cx, y, cx, y + row_height, ctx->theme->border);
 
-        style = make_style(ctx, ctx->theme->table_size_px,
-                           cell->type == MDWN_NODE_TABLE_HEADER_CELL
-                               ? ctx->theme->heading
-                               : ctx->theme->text);
+        style = mdwn_layout_make_style(
+            ctx, ctx->theme->table_size_px,
+            cell->type == MDWN_NODE_TABLE_HEADER_CELL
+                ? ctx->theme->heading
+                : ctx->theme->text);
         style.line_height = ctx->theme->table_line_height_scale;
         if (cell->type == MDWN_NODE_TABLE_HEADER_CELL)
             style.weight = ctx->theme->table_header_weight;
@@ -935,7 +534,8 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
         if (cell->as.table_cell.align != MDWN_ALIGN_DEFAULT &&
             cell->as.table_cell.align != MDWN_ALIGN_LEFT) {
             float text_width = fminf(
-                measure_inline_width(ctx, cell, style), content_width);
+                mdwn_layout_measure_inline_width(ctx, cell, style),
+                content_width);
             float free_width = content_width - text_width;
 
             if (cell->as.table_cell.align == MDWN_ALIGN_CENTER)
@@ -943,9 +543,8 @@ layout_table_row(struct build_context *ctx, const struct mdwn_node *row,
             else if (cell->as.table_cell.align == MDWN_ALIGN_RIGHT)
                 content_x += free_width;
         }
-        (void)layout_inline_box(ctx, cell, content_x, y + padding_y,
-                               content_width,
-                               style, true);
+        (void)mdwn_layout_inline_box(ctx, cell, content_x, y + padding_y,
+                                     content_width, style, true);
         cx += col_width;
         ++col;
     }
@@ -976,14 +575,15 @@ measure_table_row_widths(struct build_context *ctx,
             cell->type != MDWN_NODE_TABLE_HEADER_CELL)
             continue;
 
-        style = make_style(ctx, ctx->theme->table_size_px,
-                           cell->type == MDWN_NODE_TABLE_HEADER_CELL
-                               ? ctx->theme->heading
-                               : ctx->theme->text);
+        style = mdwn_layout_make_style(
+            ctx, ctx->theme->table_size_px,
+            cell->type == MDWN_NODE_TABLE_HEADER_CELL
+                ? ctx->theme->heading
+                : ctx->theme->text);
         style.line_height = ctx->theme->table_line_height_scale;
         if (cell->type == MDWN_NODE_TABLE_HEADER_CELL)
             style.weight = ctx->theme->table_header_weight;
-        width = measure_inline_width(ctx, cell, style)
+        width = mdwn_layout_measure_inline_width(ctx, cell, style)
             + ctx->theme->table_cell_padding_x * 2.0f;
         col_widths[col] = fmaxf(col_widths[col], width);
         ++col;
@@ -1038,7 +638,7 @@ layout_table(struct build_context *ctx, const struct mdwn_node *table,
     col_widths = mdwn_arena_alloc(&ctx->layout->arena,
                                   columns * sizeof(*col_widths));
     if (!col_widths) {
-        set_error(ctx, "out of memory while measuring table");
+        mdwn_layout_set_error(ctx, "out of memory while measuring table");
         return y;
     }
     memset(col_widths, 0, columns * sizeof(*col_widths));
@@ -1118,9 +718,10 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
 
     switch (node->type) {
     case MDWN_NODE_PARAGRAPH: {
-        struct inline_style style = make_style(
+        struct inline_style style = mdwn_layout_make_style(
             ctx, ctx->theme->text_size_px, color);
-        float h = layout_inline_box(ctx, node, x, y, width, style, true);
+        float h = mdwn_layout_inline_box(
+            ctx, node, x, y, width, style, true);
         return y + h + (compact ? 0.0f : ctx->theme->block_spacing);
     }
 
@@ -1140,14 +741,14 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
         color = level == 6
             ? ctx->theme->heading_small
             : ctx->theme->heading;
-        style = make_style(
+        style = mdwn_layout_make_style(
             ctx, ctx->theme->heading_size_px[level - 1], color);
         style.line_height = ctx->theme->heading_line_height_scale;
         style.letter_spacing_em =
             ctx->theme->heading_letter_spacing_em[level - 1];
         style.weight = ctx->theme->heading_weight;
         style.heading = true;
-        h = layout_inline_box(ctx, node, x, y, width, style, true);
+        h = mdwn_layout_inline_box(ctx, node, x, y, width, style, true);
         y += h;
 
         if (level <= 2 && ctx->theme->border_muted.a != 0) {
