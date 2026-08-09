@@ -18,7 +18,7 @@
 #define INITIAL_HEIGHT 720
 #define SCROLL_STEP 48.0f
 #define MIN_ZOOM 1.0f
-#define MAX_ZOOM 3.0f
+#define MAX_ZOOM 5.0f
 #define WHEEL_ZOOM_STEP 1.1f
 #define ZOOM_SENSITIVITY 0.5f
 #define RASTER_ZOOM_STEP 0.25f
