@@ -20,7 +20,7 @@
 #define MIN_ZOOM 1.0f
 #define MAX_ZOOM 5.0f
 #define WHEEL_ZOOM_STEP 1.1f
-#define ZOOM_SENSITIVITY 0.5f
+#define ZOOM_SENSITIVITY 0.05f
 #define RASTER_ZOOM_STEP 0.25f
 
 struct glyph_texture {
