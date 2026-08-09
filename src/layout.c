@@ -853,12 +853,14 @@ mdwn_layout_build(struct mdwn_layout *layout,
     float content_width;
     float content_x;
     float y;
+    const struct mdwn_draw_item *item;
 
     mdwn_arena_destroy(&layout->arena);
     mdwn_arena_init(&layout->arena, 64 * 1024);
     layout->first = NULL;
     layout->last = NULL;
     layout->text_count = 0;
+    layout->content_width = (float)viewport_width;
     layout->viewport_width = viewport_width;
     layout->viewport_height = viewport_height;
     layout->content_height = 0.0f;
@@ -887,5 +889,26 @@ mdwn_layout_build(struct mdwn_layout *layout,
     layout->content_height = y + theme->bottom_margin;
     if (layout->content_height < (float)viewport_height)
         layout->content_height = (float)viewport_height;
+
+    for (item = layout->first; item; item = item->next) {
+        float right;
+
+        switch (item->type) {
+        case MDWN_DRAW_TEXT:
+            right = item->as.text.x + item->as.text.width;
+            break;
+        case MDWN_DRAW_RECT:
+            right = item->as.rect.x + item->as.rect.w;
+            break;
+        case MDWN_DRAW_LINE:
+            right = fmaxf(item->as.line.x1, item->as.line.x2);
+            break;
+        default:
+            right = 0.0f;
+            break;
+        }
+        layout->content_width = fmaxf(
+            layout->content_width, right + content_x);
+    }
     return 0;
 }

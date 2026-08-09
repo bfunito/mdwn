@@ -17,6 +17,10 @@
 #define INITIAL_WIDTH 960
 #define INITIAL_HEIGHT 720
 #define SCROLL_STEP 48.0f
+#define MIN_ZOOM 1.0f
+#define MAX_ZOOM 3.0f
+#define WHEEL_ZOOM_STEP 1.1f
+#define ZOOM_SENSITIVITY 0.5f
 
 struct glyph_texture {
     struct mdwn_font *font;
@@ -43,6 +47,8 @@ struct viewer {
     struct mdwn_selection selection;
     const struct mdwn_document *doc;
     const struct mdwn_theme *theme;
+    float zoom;
+    float scroll_x;
     float scroll_y;
     int width;
     int height;
@@ -57,6 +63,18 @@ struct viewer {
 };
 
 static void set_sdl_error(struct viewer *, const char *);
+
+static float
+document_x(const struct viewer *viewer, float x)
+{
+    return viewer->scroll_x + x / viewer->zoom;
+}
+
+static float
+document_y(const struct viewer *viewer, float y)
+{
+    return viewer->scroll_y + y / viewer->zoom;
+}
 
 static const struct mdwn_draw_item *
 text_at(const struct mdwn_layout *layout, float x, float y)
@@ -90,7 +108,7 @@ static void
 update_cursor(struct viewer *viewer, float x, float y)
 {
     const struct mdwn_draw_item *item = text_at(
-        &viewer->layout, x, y + viewer->scroll_y);
+        &viewer->layout, document_x(viewer, x), document_y(viewer, y));
     SDL_Cursor *cursor = viewer->default_cursor;
 
     if (item)
@@ -361,8 +379,9 @@ static int
 draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
 {
     const struct mdwn_color color = item->as.text.color;
-    float pen_x = item->as.text.x;
+    float pen_x = item->as.text.x - viewer->scroll_x;
     float pen_y = item->as.text.baseline - viewer->scroll_y;
+    float viewport_height = (float)viewer->height / viewer->zoom;
     size_t i;
 
     for (i = 0; i < item->as.text.glyph_count; ++i) {
@@ -375,12 +394,14 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
         if (texture->texture && texture->width > 0 && texture->height > 0) {
             SDL_FRect dst;
 
-            dst.x = roundf(pen_x + g->x_offset + (float)texture->left);
-            dst.y = roundf(pen_y - g->y_offset - (float)texture->top);
+            dst.x = roundf((pen_x + g->x_offset + (float)texture->left)
+                           * viewer->zoom) / viewer->zoom;
+            dst.y = roundf((pen_y - g->y_offset - (float)texture->top)
+                           * viewer->zoom) / viewer->zoom;
             dst.w = (float)texture->width;
             dst.h = (float)texture->height;
 
-            if (dst.y + dst.h >= 0.0f && dst.y <= (float)viewer->height) {
+            if (dst.y + dst.h >= 0.0f && dst.y <= viewport_height) {
                 if (!SDL_SetTextureColorMod(texture->texture, color.r, color.g, color.b) ||
                     !SDL_SetTextureAlphaMod(texture->texture, color.a) ||
                     !SDL_RenderTexture(viewer->renderer, texture->texture, NULL, &dst)) {
@@ -397,16 +418,20 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
     set_draw_color(viewer->renderer, color);
     if (item->as.text.strike) {
         float y = item->as.text.baseline - viewer->scroll_y - item->as.text.line_height * 0.20f;
-        if (!SDL_RenderLine(viewer->renderer, item->as.text.x, y,
-                            item->as.text.x + item->as.text.width, y)) {
+        if (!SDL_RenderLine(viewer->renderer,
+                            item->as.text.x - viewer->scroll_x, y,
+                            item->as.text.x + item->as.text.width
+                                - viewer->scroll_x, y)) {
             set_sdl_error(viewer, "could not render strikethrough");
             return -1;
         }
     }
     if (item->as.text.underline) {
         float y = item->as.text.baseline - viewer->scroll_y + 2.0f;
-        if (!SDL_RenderLine(viewer->renderer, item->as.text.x, y,
-                            item->as.text.x + item->as.text.width, y)) {
+        if (!SDL_RenderLine(viewer->renderer,
+                            item->as.text.x - viewer->scroll_x, y,
+                            item->as.text.x + item->as.text.width
+                                - viewer->scroll_x, y)) {
             set_sdl_error(viewer, "could not render underline");
             return -1;
         }
@@ -429,13 +454,13 @@ draw_text_selection(struct viewer *viewer,
 
     x1 = mdwn_selection_text_x_at(item, start);
     x2 = mdwn_selection_text_x_at(item, end);
-    rect.x = fminf(x1, x2);
+    rect.x = fminf(x1, x2) - viewer->scroll_x;
     rect.y = item->as.text.top - viewer->scroll_y;
     rect.w = fabsf(x2 - x1);
     rect.h = item->as.text.line_height;
 
     if (rect.w <= 0.0f || rect.y + rect.h < 0.0f ||
-        rect.y > (float)viewer->height)
+        rect.y > (float)viewer->height / viewer->zoom)
         return 0;
 
     set_draw_color(viewer->renderer, color);
@@ -447,29 +472,42 @@ draw_text_selection(struct viewer *viewer,
 }
 
 static int
-draw_scrollbar(struct viewer *viewer)
+draw_scrollbar(struct viewer *viewer, bool horizontal)
 {
-    float content = viewer->layout.content_height;
-    float viewport = (float)viewer->height;
-    float bar_height;
+    float window_size = horizontal
+        ? (float)viewer->width
+        : (float)viewer->height;
+    float content = horizontal
+        ? viewer->layout.content_width
+        : viewer->layout.content_height;
+    float viewport = window_size / viewer->zoom;
+    float offset = horizontal ? viewer->scroll_x : viewer->scroll_y;
+    float bar_size;
     float travel;
     float max_scroll;
-    float y;
+    float position;
     SDL_FRect rect;
     struct mdwn_color color = { 139, 148, 158, 120 };
 
-    if (content <= viewport || viewport <= 0.0f)
+    if (content <= viewport || window_size <= 0.0f)
         return 0;
 
     max_scroll = content - viewport;
-    bar_height = fmaxf(32.0f, viewport * viewport / content);
-    travel = viewport - bar_height;
-    y = max_scroll > 0.0f ? viewer->scroll_y / max_scroll * travel : 0.0f;
+    bar_size = fmaxf(32.0f, window_size * viewport / content);
+    travel = window_size - bar_size;
+    position = offset / max_scroll * travel;
 
-    rect.x = (float)viewer->width - 6.0f;
-    rect.y = y + 2.0f;
-    rect.w = 4.0f;
-    rect.h = fmaxf(bar_height - 4.0f, 4.0f);
+    if (horizontal) {
+        rect.x = position + 2.0f;
+        rect.y = (float)viewer->height - 6.0f;
+        rect.w = fmaxf(bar_size - 4.0f, 4.0f);
+        rect.h = 4.0f;
+    } else {
+        rect.x = (float)viewer->width - 6.0f;
+        rect.y = position + 2.0f;
+        rect.w = 4.0f;
+        rect.h = fmaxf(bar_size - 4.0f, 4.0f);
+    }
 
     set_draw_color(viewer->renderer, color);
     if (!SDL_RenderFillRect(viewer->renderer, &rect)) {
@@ -484,6 +522,7 @@ render_frame(struct viewer *viewer)
 {
     const struct mdwn_draw_item *item;
     struct mdwn_color background = viewer->theme->background;
+    float viewport_height = (float)viewer->height / viewer->zoom;
 
     set_draw_color(viewer->renderer, background);
     if (!SDL_RenderClear(viewer->renderer)) {
@@ -491,16 +530,21 @@ render_frame(struct viewer *viewer)
         return -1;
     }
 
+    if (!SDL_SetRenderScale(viewer->renderer, viewer->zoom, viewer->zoom)) {
+        set_sdl_error(viewer, "could not set document zoom");
+        return -1;
+    }
+
     for (item = viewer->layout.first; item; item = item->next) {
         switch (item->type) {
         case MDWN_DRAW_RECT: {
             SDL_FRect rect;
-            rect.x = item->as.rect.x;
+            rect.x = item->as.rect.x - viewer->scroll_x;
             rect.y = item->as.rect.y - viewer->scroll_y;
             rect.w = item->as.rect.w;
             rect.h = item->as.rect.h;
 
-            if (rect.y + rect.h < 0.0f || rect.y > (float)viewer->height)
+            if (rect.y + rect.h < 0.0f || rect.y > viewport_height)
                 break;
             set_draw_color(viewer->renderer, item->as.rect.color);
             if (!fill_rounded_rect(viewer->renderer, &rect,
@@ -513,12 +557,13 @@ render_frame(struct viewer *viewer)
         case MDWN_DRAW_LINE: {
             float y1 = item->as.line.y1 - viewer->scroll_y;
             float y2 = item->as.line.y2 - viewer->scroll_y;
-            if (fmaxf(y1, y2) < 0.0f || fminf(y1, y2) > (float)viewer->height)
+            float x1 = item->as.line.x1 - viewer->scroll_x;
+            float x2 = item->as.line.x2 - viewer->scroll_x;
+            if (fmaxf(y1, y2) < 0.0f || fminf(y1, y2) > viewport_height)
                 break;
             set_draw_color(viewer->renderer, item->as.line.color);
             if (!SDL_RenderLine(viewer->renderer,
-                                item->as.line.x1, y1,
-                                item->as.line.x2, y2)) {
+                                x1, y1, x2, y2)) {
                 set_sdl_error(viewer, "could not render line");
                 return -1;
             }
@@ -526,7 +571,7 @@ render_frame(struct viewer *viewer)
         }
         case MDWN_DRAW_TEXT:
             if (item->as.text.baseline - viewer->scroll_y + item->as.text.line_height < 0.0f ||
-                item->as.text.baseline - viewer->scroll_y - item->as.text.line_height > (float)viewer->height)
+                item->as.text.baseline - viewer->scroll_y - item->as.text.line_height > viewport_height)
                 break;
             if (draw_text_selection(viewer, item) < 0)
                 return -1;
@@ -536,7 +581,13 @@ render_frame(struct viewer *viewer)
         }
     }
 
-    if (draw_scrollbar(viewer) < 0)
+    if (!SDL_SetRenderScale(viewer->renderer, 1.0f, 1.0f)) {
+        set_sdl_error(viewer, "could not reset document zoom");
+        return -1;
+    }
+
+    if (draw_scrollbar(viewer, false) < 0 ||
+        draw_scrollbar(viewer, true) < 0)
         return -1;
 
     SDL_RenderPresent(viewer->renderer);
@@ -546,12 +597,21 @@ render_frame(struct viewer *viewer)
 static void
 clamp_scroll(struct viewer *viewer)
 {
-    float max_scroll = fmaxf(0.0f, viewer->layout.content_height - (float)viewer->height);
+    float max_scroll_x = fmaxf(
+        0.0f, viewer->layout.content_width
+            - (float)viewer->width / viewer->zoom);
+    float max_scroll_y = fmaxf(
+        0.0f, viewer->layout.content_height
+            - (float)viewer->height / viewer->zoom);
 
+    if (viewer->scroll_x < 0.0f)
+        viewer->scroll_x = 0.0f;
+    if (viewer->scroll_x > max_scroll_x)
+        viewer->scroll_x = max_scroll_x;
     if (viewer->scroll_y < 0.0f)
         viewer->scroll_y = 0.0f;
-    if (viewer->scroll_y > max_scroll)
-        viewer->scroll_y = max_scroll;
+    if (viewer->scroll_y > max_scroll_y)
+        viewer->scroll_y = max_scroll_y;
 }
 
 static int
@@ -580,15 +640,39 @@ rebuild_layout(struct viewer *viewer)
 }
 
 static void
-scroll_by(struct viewer *viewer, float amount)
+scroll_by(struct viewer *viewer, float x, float y)
 {
-    float old = viewer->scroll_y;
-    viewer->scroll_y += amount;
+    float old_x = viewer->scroll_x;
+    float old_y = viewer->scroll_y;
+
+    viewer->scroll_x += x / viewer->zoom;
+    viewer->scroll_y += y / viewer->zoom;
     clamp_scroll(viewer);
-    if (viewer->scroll_y != old) {
+    if (viewer->scroll_x != old_x || viewer->scroll_y != old_y) {
         viewer->dirty = true;
         update_cursor_at_mouse(viewer);
     }
+}
+
+static void
+zoom_at(struct viewer *viewer, float factor, float x, float y)
+{
+    float old_zoom = viewer->zoom;
+    float zoom = fminf(fmaxf(old_zoom * factor, MIN_ZOOM), MAX_ZOOM);
+    float anchor_x;
+    float anchor_y;
+
+    if (zoom == old_zoom)
+        return;
+
+    anchor_x = document_x(viewer, x);
+    anchor_y = document_y(viewer, y);
+    viewer->zoom = zoom;
+    viewer->scroll_x = anchor_x - x / zoom;
+    viewer->scroll_y = anchor_y - y / zoom;
+    clamp_scroll(viewer);
+    viewer->dirty = true;
+    update_cursor_at_mouse(viewer);
 }
 
 static int
@@ -611,21 +695,45 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         break;
 
     case SDL_EVENT_MOUSE_WHEEL: {
+        SDL_Keymod modifiers = SDL_GetModState();
+        float dx = event->wheel.x;
         float dy = event->wheel.y;
-        if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+        if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            dx = -dx;
             dy = -dy;
-        scroll_by(viewer, -dy * SCROLL_STEP);
+        }
+        if (modifiers & SDL_KMOD_CTRL) {
+            zoom_at(viewer, powf(WHEEL_ZOOM_STEP,
+                                 dy * ZOOM_SENSITIVITY),
+                    event->wheel.mouse_x, event->wheel.mouse_y);
+        } else {
+            if (modifiers & SDL_KMOD_SHIFT) {
+                dx += dy;
+                dy = 0.0f;
+            }
+            scroll_by(viewer, dx * SCROLL_STEP, -dy * SCROLL_STEP);
+        }
         break;
     }
+
+#if SDL_MINOR_VERSION >= 4
+    case SDL_EVENT_PINCH_UPDATE: {
+        float x, y;
+
+        (void)SDL_GetMouseState(&x, &y);
+        zoom_at(viewer, powf(event->pinch.scale, ZOOM_SENSITIVITY), x, y);
+        break;
+    }
+#endif
 
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (event->button.button == SDL_BUTTON_LEFT) {
             viewer->pressed_link = link_at(
-                &viewer->layout, event->button.x,
-                event->button.y + viewer->scroll_y);
+                &viewer->layout, document_x(viewer, event->button.x),
+                document_y(viewer, event->button.y));
             if (mdwn_selection_begin(&viewer->selection, &viewer->layout,
-                                     event->button.x,
-                                     event->button.y + viewer->scroll_y,
+                                     document_x(viewer, event->button.x),
+                                     document_y(viewer, event->button.y),
                                      event->button.clicks))
                 (void)SDL_CaptureMouse(true);
             viewer->dirty = true;
@@ -636,8 +744,8 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         update_cursor(viewer, event->motion.x, event->motion.y);
         if (viewer->selection.dragging) {
             if (mdwn_selection_update(&viewer->selection, &viewer->layout,
-                                      event->motion.x,
-                                      event->motion.y + viewer->scroll_y))
+                                      document_x(viewer, event->motion.x),
+                                      document_y(viewer, event->motion.y)))
                 viewer->dirty = true;
         }
         break;
@@ -645,14 +753,14 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (event->button.button == SDL_BUTTON_LEFT) {
             const char *released_link = link_at(
-                &viewer->layout, event->button.x,
-                event->button.y + viewer->scroll_y);
+                &viewer->layout, document_x(viewer, event->button.x),
+                document_y(viewer, event->button.y));
 
             if (viewer->selection.dragging) {
                 (void)mdwn_selection_update(
                     &viewer->selection, &viewer->layout,
-                    event->button.x,
-                    event->button.y + viewer->scroll_y);
+                    document_x(viewer, event->button.x),
+                    document_y(viewer, event->button.y));
                 viewer->selection.dragging = false;
                 (void)SDL_CaptureMouse(false);
             }
@@ -688,17 +796,17 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
             break;
         case SDLK_DOWN:
         case SDLK_J:
-            scroll_by(viewer, SCROLL_STEP);
+            scroll_by(viewer, 0.0f, SCROLL_STEP);
             break;
         case SDLK_UP:
         case SDLK_K:
-            scroll_by(viewer, -SCROLL_STEP);
+            scroll_by(viewer, 0.0f, -SCROLL_STEP);
             break;
         case SDLK_PAGEDOWN:
-            scroll_by(viewer, (float)viewer->height * 0.85f);
+            scroll_by(viewer, 0.0f, (float)viewer->height * 0.85f);
             break;
         case SDLK_PAGEUP:
-            scroll_by(viewer, -(float)viewer->height * 0.85f);
+            scroll_by(viewer, 0.0f, -(float)viewer->height * 0.85f);
             break;
         case SDLK_HOME:
             viewer->scroll_y = 0.0f;
@@ -707,7 +815,8 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
             break;
         case SDLK_END:
             viewer->scroll_y = fmaxf(0.0f,
-                viewer->layout.content_height - (float)viewer->height);
+                viewer->layout.content_height
+                    - (float)viewer->height / viewer->zoom);
             viewer->dirty = true;
             update_cursor_at_mouse(viewer);
             break;
@@ -755,6 +864,7 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     memset(&viewer, 0, sizeof(viewer));
     viewer.doc = doc;
     viewer.theme = theme;
+    viewer.zoom = 1.0f;
     viewer.err = err;
     viewer.err_size = err_size;
     viewer.width = INITIAL_WIDTH;

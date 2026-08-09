@@ -58,6 +58,7 @@ struct mdwn_layout {
     struct mdwn_draw_item *first;
     struct mdwn_draw_item *last;
     size_t text_count;
+    float content_width;
     float content_height;
     int viewport_width;
     int viewport_height;
