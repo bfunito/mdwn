@@ -607,6 +607,55 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
 static float layout_block(struct build_context *, const struct mdwn_node *,
                           float, float, float, struct mdwn_color, bool);
 
+static bool
+is_inline_node(const struct mdwn_node *node)
+{
+    switch (node->type) {
+    case MDWN_NODE_EMPHASIS:
+    case MDWN_NODE_STRONG:
+    case MDWN_NODE_LINK:
+    case MDWN_NODE_IMAGE:
+    case MDWN_NODE_CODE_SPAN:
+    case MDWN_NODE_STRIKETHROUGH:
+    case MDWN_NODE_RAW_HTML_SPAN:
+    case MDWN_NODE_TEXT:
+    case MDWN_NODE_SOFT_BREAK:
+    case MDWN_NODE_HARD_BREAK:
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+static float
+layout_inline_sequence(struct build_context *ctx,
+                       const struct mdwn_node **node,
+                       float x, float y, float width,
+                       struct mdwn_color color, bool compact)
+{
+    struct inline_style style = make_style(16, color);
+    struct inline_flow flow;
+    const struct mdwn_node *child = *node;
+
+    if (flow_init(&flow, ctx, x, y, width, style, true) < 0)
+        return y;
+
+    while (child && is_inline_node(child)) {
+        if (layout_inline_node(&flow, child, style) < 0)
+            return y;
+
+        child = child->next;
+    }
+
+    *node = child;
+
+    return y
+        + (flow.line_top - flow.top)
+        + flow.line_height
+        + (compact ? 4.0f : 16.0f);
+}
+
 static float
 layout_list(struct build_context *ctx, const struct mdwn_node *list,
             float x, float width, float y, struct mdwn_color color)
@@ -651,9 +700,33 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
                 return y;
         }
 
-        for (child = item->first_child; child; child = child->next) {
-            child_y = layout_block(ctx, child, x + indent, width - indent,
-                                   child_y, color, list->as.list.tight);
+        child = item->first_child;
+
+        while (child) {
+            if (is_inline_node(child)) {
+                child_y = layout_inline_sequence(
+                    ctx,
+                    &child,
+                    x + indent,
+                    child_y,
+                    width - indent,
+                    color,
+                    list->as.list.tight
+                );
+            } else {
+                child_y = layout_block(
+                    ctx,
+                    child,
+                    x + indent,
+                    width - indent,
+                    child_y,
+                    color,
+                    list->as.list.tight
+                );
+
+                child = child->next;
+            }
+
             if (ctx->failed)
                 return y;
         }
