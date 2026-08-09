@@ -39,9 +39,18 @@ struct text_position {
     size_t offset;
 };
 
+enum selection_mode {
+    SELECTION_CHARACTER,
+    SELECTION_WORD,
+    SELECTION_LINE,
+};
+
 struct text_selection {
     struct text_position anchor;
     struct text_position focus;
+    struct text_position origin_start;
+    struct text_position origin_end;
+    enum selection_mode mode;
     bool valid;
     bool dragging;
 };
@@ -207,6 +216,193 @@ same_text_line(const struct mdwn_draw_item *a,
 {
     return a->as.text.top < b->as.text.top + b->as.text.line_height &&
            b->as.text.top < a->as.text.top + a->as.text.line_height;
+}
+
+static size_t
+next_character(const char *text, size_t length, size_t offset)
+{
+    if (offset < length)
+        ++offset;
+    while (offset < length &&
+           ((unsigned char)text[offset] & 0xc0u) == 0x80u)
+        ++offset;
+    return offset;
+}
+
+static size_t
+previous_character(const char *text, size_t offset)
+{
+    if (offset > 0)
+        --offset;
+    while (offset > 0 &&
+           ((unsigned char)text[offset] & 0xc0u) == 0x80u)
+        --offset;
+    return offset;
+}
+
+static bool
+is_word_character(const char *text, size_t length, size_t offset)
+{
+    unsigned char c;
+
+    if (offset >= length)
+        return false;
+
+    c = (unsigned char)text[offset];
+    return c >= 0x80u ||
+           (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') ||
+           c == '_';
+}
+
+static size_t
+character_at_x(const struct mdwn_draw_item *item, float x)
+{
+    float pen = item->as.text.x;
+    size_t offset = 0;
+    size_t i;
+
+    for (i = 0; i < item->as.text.glyph_count; ++i) {
+        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
+        float next = pen + glyph->x_advance;
+
+        offset = glyph->cluster;
+        if (x < next)
+            break;
+        pen = next;
+    }
+
+    return offset < item->as.text.text_length ? offset : 0;
+}
+
+static bool
+word_range(const struct mdwn_draw_item *item, float x,
+           struct text_position *start, struct text_position *end)
+{
+    const char *text = item->as.text.text;
+    size_t length = item->as.text.text_length;
+    size_t offset = character_at_x(item, x);
+    size_t start_offset, end_offset;
+
+    if (!is_word_character(text, length, offset)) {
+        if (offset > 0 &&
+            is_word_character(text, length,
+                              previous_character(text, offset))) {
+            offset = previous_character(text, offset);
+        } else {
+            offset = next_character(text, length, offset);
+            while (offset < length &&
+                   !is_word_character(text, length, offset))
+                offset = next_character(text, length, offset);
+        }
+    }
+    if (offset >= length)
+        return false;
+
+    start_offset = offset;
+    while (start_offset > 0) {
+        size_t previous = previous_character(text, start_offset);
+
+        if (!is_word_character(text, length, previous))
+            break;
+        start_offset = previous;
+    }
+
+    end_offset = next_character(text, length, offset);
+    while (end_offset < length &&
+           is_word_character(text, length, end_offset))
+        end_offset = next_character(text, length, end_offset);
+
+    start->item = item;
+    start->offset = start_offset;
+    end->item = item;
+    end->offset = end_offset;
+    return true;
+}
+
+static void
+line_range(const struct viewer *viewer, const struct mdwn_draw_item *clicked,
+           struct text_position *start, struct text_position *end)
+{
+    const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *first = NULL;
+    const struct mdwn_draw_item *last = NULL;
+    bool found = false;
+
+    for (item = viewer->layout.first; item; item = item->next) {
+        if (item->type != MDWN_DRAW_TEXT)
+            continue;
+
+        if (item == clicked) {
+            if (!first)
+                first = item;
+            last = item;
+            found = true;
+        } else if (!found && same_text_line(clicked, item)) {
+            if (!first)
+                first = item;
+        } else if (!found) {
+            first = NULL;
+        } else if (same_text_line(clicked, item)) {
+            last = item;
+        } else {
+            break;
+        }
+    }
+
+    start->item = first;
+    start->offset = 0;
+    end->item = last;
+    end->offset = last->as.text.text_length;
+}
+
+static void
+begin_selection(struct viewer *viewer,
+                struct text_position start, struct text_position end,
+                enum selection_mode mode)
+{
+    viewer->selection.anchor = start;
+    viewer->selection.focus = end;
+    viewer->selection.origin_start = start;
+    viewer->selection.origin_end = end;
+    viewer->selection.mode = mode;
+    viewer->selection.valid = true;
+    viewer->selection.dragging = true;
+    (void)SDL_CaptureMouse(true);
+}
+
+static bool
+update_drag_selection(struct viewer *viewer, float x, float y)
+{
+    struct text_position position;
+    struct text_position start, end;
+
+    if (!find_text_position(viewer, x, y, true, &position))
+        return false;
+
+    switch (viewer->selection.mode) {
+    case SELECTION_WORD:
+        if (!word_range(position.item, x, &start, &end))
+            return false;
+        break;
+    case SELECTION_LINE:
+        line_range(viewer, position.item, &start, &end);
+        break;
+    default:
+        start = position;
+        end = position;
+        break;
+    }
+
+    if (compare_positions(start, viewer->selection.origin_start) < 0) {
+        viewer->selection.anchor = viewer->selection.origin_end;
+        viewer->selection.focus = start;
+    } else {
+        viewer->selection.anchor = viewer->selection.origin_start;
+        viewer->selection.focus = end;
+    }
+    return true;
 }
 
 static char *
@@ -785,14 +981,29 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (event->button.button == SDL_BUTTON_LEFT) {
             struct text_position position;
+            struct text_position start, end;
+            enum selection_mode mode;
+            bool selected = true;
 
+            viewer->selection.dragging = false;
             if (find_text_position(viewer, event->button.x,
                                    event->button.y, false, &position)) {
-                viewer->selection.anchor = position;
-                viewer->selection.focus = position;
-                viewer->selection.valid = true;
-                viewer->selection.dragging = true;
-                (void)SDL_CaptureMouse(true);
+                if (event->button.clicks >= 3) {
+                    line_range(viewer, position.item, &start, &end);
+                    mode = SELECTION_LINE;
+                } else if (event->button.clicks == 2) {
+                    selected = word_range(position.item, event->button.x,
+                                          &start, &end);
+                    mode = SELECTION_WORD;
+                } else {
+                    start = position;
+                    end = position;
+                    mode = SELECTION_CHARACTER;
+                }
+                if (selected)
+                    begin_selection(viewer, start, end, mode);
+                else
+                    viewer->selection.valid = false;
             } else {
                 viewer->selection.valid = false;
             }
@@ -802,26 +1013,20 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_MOTION:
         if (viewer->selection.dragging) {
-            struct text_position position;
-
-            if (find_text_position(viewer, event->motion.x,
-                                   event->motion.y, true, &position)) {
-                viewer->selection.focus = position;
+            if (update_drag_selection(viewer, event->motion.x,
+                                      event->motion.y))
                 viewer->dirty = true;
-            }
         }
         break;
 
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (event->button.button == SDL_BUTTON_LEFT &&
-            viewer->selection.dragging) {
-            struct text_position position;
-
-            if (find_text_position(viewer, event->button.x,
-                                   event->button.y, true, &position))
-                viewer->selection.focus = position;
-            viewer->selection.dragging = false;
-            (void)SDL_CaptureMouse(false);
+        if (event->button.button == SDL_BUTTON_LEFT) {
+            if (viewer->selection.dragging) {
+                (void)update_drag_selection(viewer, event->button.x,
+                                            event->button.y);
+                viewer->selection.dragging = false;
+                (void)SDL_CaptureMouse(false);
+            }
             viewer->dirty = true;
             if (copy_selection(viewer, true) < 0)
                 return -1;
