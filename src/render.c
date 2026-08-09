@@ -48,11 +48,36 @@ struct viewer {
     int height;
     bool dirty;
     bool quit;
+    const char *pressed_link;
     char *err;
     size_t err_size;
 };
 
 static void set_sdl_error(struct viewer *, const char *);
+
+static const char *
+link_at(const struct mdwn_layout *layout, float x, float y)
+{
+    const struct mdwn_draw_item *item;
+
+    for (item = layout->first; item; item = item->next) {
+        if (item->type == MDWN_DRAW_TEXT && item->as.text.href &&
+            x >= item->as.text.x &&
+            x <= item->as.text.x + item->as.text.width &&
+            y >= item->as.text.top &&
+            y <= item->as.text.top + item->as.text.line_height)
+            return item->as.text.href;
+    }
+    return NULL;
+}
+
+static bool
+selection_is_empty(const struct mdwn_selection *selection)
+{
+    return selection->valid &&
+           selection->anchor.item == selection->focus.item &&
+           selection->anchor.offset == selection->focus.offset;
+}
 
 static int
 copy_selection(struct viewer *viewer, bool primary)
@@ -553,6 +578,9 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (event->button.button == SDL_BUTTON_LEFT) {
+            viewer->pressed_link = link_at(
+                &viewer->layout, event->button.x,
+                event->button.y + viewer->scroll_y);
             if (mdwn_selection_begin(&viewer->selection, &viewer->layout,
                                      event->button.x,
                                      event->button.y + viewer->scroll_y,
@@ -573,6 +601,10 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (event->button.button == SDL_BUTTON_LEFT) {
+            const char *released_link = link_at(
+                &viewer->layout, event->button.x,
+                event->button.y + viewer->scroll_y);
+
             if (viewer->selection.dragging) {
                 (void)mdwn_selection_update(
                     &viewer->selection, &viewer->layout,
@@ -584,6 +616,13 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
             viewer->dirty = true;
             if (copy_selection(viewer, true) < 0)
                 return -1;
+            if (released_link == viewer->pressed_link && released_link &&
+                selection_is_empty(&viewer->selection) &&
+                !SDL_OpenURL(released_link)) {
+                set_sdl_error(viewer, "could not open link");
+                return -1;
+            }
+            viewer->pressed_link = NULL;
         }
         break;
 

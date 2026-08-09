@@ -163,6 +163,7 @@ flow_place_token(struct inline_flow *flow,
         item->as.text.glyphs = glyphs;
         item->as.text.glyph_count = glyph_count;
         item->as.text.text = stored_text;
+        item->as.text.href = style.href;
         item->as.text.text_length = len;
         item->as.text.order = flow->ctx->layout->text_count++;
         item->as.text.x = text_x;
@@ -255,6 +256,7 @@ layout_inline_node(struct inline_flow *flow, const struct mdwn_node *node,
         break;
     case MDWN_NODE_LINK:
         style.color = flow->ctx->theme->link;
+        style.href = node->as.link.href;
         break;
     case MDWN_NODE_IMAGE:
         style.italic = true;

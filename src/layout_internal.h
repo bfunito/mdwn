@@ -25,6 +25,7 @@ struct inline_style {
     bool underline;
     bool code_background;
     bool preserve_spaces;
+    const char *href;
     struct mdwn_color color;
 };
 

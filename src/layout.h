@@ -27,6 +27,7 @@ struct mdwn_draw_item {
             struct mdwn_shaped_glyph *glyphs;
             size_t glyph_count;
             const char *text;
+            const char *href;
             size_t text_length;
             size_t order;
             float x;
