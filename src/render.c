@@ -49,26 +49,65 @@ struct viewer {
     bool dirty;
     bool quit;
     const char *pressed_link;
+    SDL_Cursor *default_cursor;
+    SDL_Cursor *text_cursor;
+    SDL_Cursor *link_cursor;
     char *err;
     size_t err_size;
 };
 
 static void set_sdl_error(struct viewer *, const char *);
 
-static const char *
-link_at(const struct mdwn_layout *layout, float x, float y)
+static const struct mdwn_draw_item *
+text_at(const struct mdwn_layout *layout, float x, float y)
 {
     const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *text = NULL;
 
     for (item = layout->first; item; item = item->next) {
-        if (item->type == MDWN_DRAW_TEXT && item->as.text.href &&
+        if (item->type == MDWN_DRAW_TEXT &&
             x >= item->as.text.x &&
             x <= item->as.text.x + item->as.text.width &&
             y >= item->as.text.top &&
-            y <= item->as.text.top + item->as.text.line_height)
-            return item->as.text.href;
+            y <= item->as.text.top + item->as.text.line_height) {
+            if (item->as.text.href)
+                return item;
+            text = item;
+        }
     }
-    return NULL;
+    return text;
+}
+
+static const char *
+link_at(const struct mdwn_layout *layout, float x, float y)
+{
+    const struct mdwn_draw_item *item = text_at(layout, x, y);
+
+    return item ? item->as.text.href : NULL;
+}
+
+static void
+update_cursor(struct viewer *viewer, float x, float y)
+{
+    const struct mdwn_draw_item *item = text_at(
+        &viewer->layout, x, y + viewer->scroll_y);
+    SDL_Cursor *cursor = viewer->default_cursor;
+
+    if (item)
+        cursor = item->as.text.href
+            ? viewer->link_cursor
+            : viewer->text_cursor;
+    if (cursor != SDL_GetCursor())
+        (void)SDL_SetCursor(cursor);
+}
+
+static void
+update_cursor_at_mouse(struct viewer *viewer)
+{
+    float x, y;
+
+    (void)SDL_GetMouseState(&x, &y);
+    update_cursor(viewer, x, y);
 }
 
 static bool
@@ -536,6 +575,7 @@ rebuild_layout(struct viewer *viewer)
     viewer->selection.dragging = false;
     clamp_scroll(viewer);
     viewer->dirty = true;
+    update_cursor_at_mouse(viewer);
     return 0;
 }
 
@@ -545,8 +585,10 @@ scroll_by(struct viewer *viewer, float amount)
     float old = viewer->scroll_y;
     viewer->scroll_y += amount;
     clamp_scroll(viewer);
-    if (viewer->scroll_y != old)
+    if (viewer->scroll_y != old) {
         viewer->dirty = true;
+        update_cursor_at_mouse(viewer);
+    }
 }
 
 static int
@@ -591,6 +633,7 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         break;
 
     case SDL_EVENT_MOUSE_MOTION:
+        update_cursor(viewer, event->motion.x, event->motion.y);
         if (viewer->selection.dragging) {
             if (mdwn_selection_update(&viewer->selection, &viewer->layout,
                                       event->motion.x,
@@ -660,11 +703,13 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         case SDLK_HOME:
             viewer->scroll_y = 0.0f;
             viewer->dirty = true;
+            update_cursor_at_mouse(viewer);
             break;
         case SDLK_END:
             viewer->scroll_y = fmaxf(0.0f,
                 viewer->layout.content_height - (float)viewer->height);
             viewer->dirty = true;
+            update_cursor_at_mouse(viewer);
             break;
         default:
             break;
@@ -684,6 +729,12 @@ viewer_cleanup(struct viewer *viewer)
     glyph_cache_destroy(&viewer->glyphs);
     mdwn_layout_destroy(&viewer->layout);
     mdwn_font_system_destroy(viewer->fonts);
+    if (viewer->link_cursor)
+        SDL_DestroyCursor(viewer->link_cursor);
+    if (viewer->text_cursor)
+        SDL_DestroyCursor(viewer->text_cursor);
+    if (viewer->default_cursor)
+        SDL_DestroyCursor(viewer->default_cursor);
     if (viewer->renderer)
         SDL_DestroyRenderer(viewer->renderer);
     if (viewer->window)
@@ -728,6 +779,16 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     (void)SDL_SetWindowMinimumSize(viewer.window, 320, 240);
     (void)SDL_SetRenderVSync(viewer.renderer, 1);
     (void)SDL_SetRenderDrawBlendMode(viewer.renderer, SDL_BLENDMODE_BLEND);
+
+    viewer.default_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
+    viewer.text_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
+    viewer.link_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER);
+    if (!viewer.default_cursor || !viewer.text_cursor || !viewer.link_cursor) {
+        set_sdl_error(&viewer, "could not create system cursor");
+        viewer_cleanup(&viewer);
+        return -1;
+    }
+    (void)SDL_SetCursor(viewer.default_cursor);
 
     /* Present an empty native window before font discovery and layout work. */
     set_draw_color(viewer.renderer, background);
