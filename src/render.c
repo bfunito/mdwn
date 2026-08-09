@@ -21,6 +21,7 @@
 #define MAX_ZOOM 3.0f
 #define WHEEL_ZOOM_STEP 1.1f
 #define ZOOM_SENSITIVITY 0.5f
+#define RASTER_ZOOM_STEP 0.25f
 
 struct glyph_texture {
     struct mdwn_font *font;
@@ -48,6 +49,7 @@ struct viewer {
     const struct mdwn_document *doc;
     const struct mdwn_theme *theme;
     float zoom;
+    float raster_zoom;
     float scroll_x;
     float scroll_y;
     int width;
@@ -379,34 +381,50 @@ static int
 draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
 {
     const struct mdwn_color color = item->as.text.color;
+    struct mdwn_font *font;
+    float font_scale;
     float pen_x = item->as.text.x - viewer->scroll_x;
     float pen_y = item->as.text.baseline - viewer->scroll_y;
+    float viewport_width = (float)viewer->width / viewer->zoom;
     float viewport_height = (float)viewer->height / viewer->zoom;
     size_t i;
 
+    font = mdwn_font_get_scaled(viewer->fonts, item->as.text.font,
+                                viewer->raster_zoom, &font_scale,
+                                viewer->err, viewer->err_size);
+    if (!font)
+        return -1;
+
     for (i = 0; i < item->as.text.glyph_count; ++i) {
         const struct mdwn_shaped_glyph *g = &item->as.text.glyphs[i];
-        struct glyph_texture *texture = get_glyph(viewer, item->as.text.font, g->index);
+        if (pen_x + item->as.text.line_height >= 0.0f &&
+            pen_x <= viewport_width) {
+            struct glyph_texture *texture = get_glyph(viewer, font, g->index);
 
-        if (!texture)
-            return -1;
+            if (!texture)
+                return -1;
 
-        if (texture->texture && texture->width > 0 && texture->height > 0) {
-            SDL_FRect dst;
+            if (texture->texture && texture->width > 0 && texture->height > 0) {
+                SDL_FRect dst;
 
-            dst.x = roundf((pen_x + g->x_offset + (float)texture->left)
-                           * viewer->zoom) / viewer->zoom;
-            dst.y = roundf((pen_y - g->y_offset - (float)texture->top)
-                           * viewer->zoom) / viewer->zoom;
-            dst.w = (float)texture->width;
-            dst.h = (float)texture->height;
+                dst.x = roundf((pen_x + g->x_offset
+                                + (float)texture->left / font_scale)
+                               * viewer->zoom) / viewer->zoom;
+                dst.y = roundf((pen_y - g->y_offset
+                                - (float)texture->top / font_scale)
+                               * viewer->zoom) / viewer->zoom;
+                dst.w = (float)texture->width / font_scale;
+                dst.h = (float)texture->height / font_scale;
 
-            if (dst.y + dst.h >= 0.0f && dst.y <= viewport_height) {
-                if (!SDL_SetTextureColorMod(texture->texture, color.r, color.g, color.b) ||
-                    !SDL_SetTextureAlphaMod(texture->texture, color.a) ||
-                    !SDL_RenderTexture(viewer->renderer, texture->texture, NULL, &dst)) {
-                    set_sdl_error(viewer, "could not render glyph");
-                    return -1;
+                if (dst.y + dst.h >= 0.0f && dst.y <= viewport_height) {
+                    if (!SDL_SetTextureColorMod(texture->texture,
+                                                color.r, color.g, color.b) ||
+                        !SDL_SetTextureAlphaMod(texture->texture, color.a) ||
+                        !SDL_RenderTexture(viewer->renderer,
+                                           texture->texture, NULL, &dst)) {
+                        set_sdl_error(viewer, "could not render glyph");
+                        return -1;
+                    }
                 }
             }
         }
@@ -522,6 +540,7 @@ render_frame(struct viewer *viewer)
 {
     const struct mdwn_draw_item *item;
     struct mdwn_color background = viewer->theme->background;
+    float viewport_width = (float)viewer->width / viewer->zoom;
     float viewport_height = (float)viewer->height / viewer->zoom;
 
     set_draw_color(viewer->renderer, background);
@@ -570,7 +589,10 @@ render_frame(struct viewer *viewer)
             break;
         }
         case MDWN_DRAW_TEXT:
-            if (item->as.text.baseline - viewer->scroll_y + item->as.text.line_height < 0.0f ||
+            if (item->as.text.x - viewer->scroll_x
+                    + item->as.text.width < 0.0f ||
+                item->as.text.x - viewer->scroll_x > viewport_width ||
+                item->as.text.baseline - viewer->scroll_y + item->as.text.line_height < 0.0f ||
                 item->as.text.baseline - viewer->scroll_y - item->as.text.line_height > viewport_height)
                 break;
             if (draw_text_selection(viewer, item) < 0)
@@ -659,6 +681,7 @@ zoom_at(struct viewer *viewer, float factor, float x, float y)
 {
     float old_zoom = viewer->zoom;
     float zoom = fminf(fmaxf(old_zoom * factor, MIN_ZOOM), MAX_ZOOM);
+    float raster_zoom;
     float anchor_x;
     float anchor_y;
 
@@ -670,6 +693,11 @@ zoom_at(struct viewer *viewer, float factor, float x, float y)
     viewer->zoom = zoom;
     viewer->scroll_x = anchor_x - x / zoom;
     viewer->scroll_y = anchor_y - y / zoom;
+    raster_zoom = roundf(zoom / RASTER_ZOOM_STEP) * RASTER_ZOOM_STEP;
+    if (raster_zoom != viewer->raster_zoom) {
+        glyph_cache_destroy(&viewer->glyphs);
+        viewer->raster_zoom = raster_zoom;
+    }
     clamp_scroll(viewer);
     viewer->dirty = true;
     update_cursor_at_mouse(viewer);
@@ -865,6 +893,7 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     viewer.doc = doc;
     viewer.theme = theme;
     viewer.zoom = 1.0f;
+    viewer.raster_zoom = 1.0f;
     viewer.err = err;
     viewer.err_size = err_size;
     viewer.width = INITIAL_WIDTH;

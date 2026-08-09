@@ -9,6 +9,7 @@
 #include <hb.h>
 
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -282,6 +283,24 @@ mdwn_font_get(struct mdwn_font_system *system, struct mdwn_font_spec spec,
     font->next = system->fonts;
     system->fonts = font;
     return font;
+}
+
+struct mdwn_font *
+mdwn_font_get_scaled(struct mdwn_font_system *system,
+                     const struct mdwn_font *font, float scale,
+                     float *actual_scale, char *err, size_t err_size)
+{
+    struct mdwn_font_spec spec = font->spec;
+    double size = round((double)spec.size_px * (double)scale);
+
+    if (!(size >= 1.0) || size > (double)UINT_MAX) {
+        set_error(err, err_size, "invalid scaled font size");
+        return NULL;
+    }
+
+    spec.size_px = (unsigned)size;
+    *actual_scale = (float)spec.size_px / (float)font->spec.size_px;
+    return mdwn_font_get(system, spec, err, err_size);
 }
 
 float

@@ -56,6 +56,10 @@ void mdwn_font_system_destroy(struct mdwn_font_system *system);
 struct mdwn_font *mdwn_font_get(struct mdwn_font_system *system,
                                 struct mdwn_font_spec spec,
                                 char *err, size_t err_size);
+struct mdwn_font *mdwn_font_get_scaled(struct mdwn_font_system *system,
+                                       const struct mdwn_font *font,
+                                       float scale, float *actual_scale,
+                                       char *err, size_t err_size);
 float mdwn_font_ascender(const struct mdwn_font *font);
 float mdwn_font_descender(const struct mdwn_font *font);
 
