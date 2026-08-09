@@ -19,6 +19,12 @@ static const struct mdwn_flavor flavors[] = {
                         MD_FLAG_WIKILINKS,
         .theme = &mdwn_theme_gitlab,
     },
+    {
+        .name = "codeberg",
+        .parser_flags = MD_DIALECT_GITHUB |
+                        MD_FLAG_LATEXMATHSPANS,
+        .theme = &mdwn_theme_codeberg,
+    },
 };
 
 const struct mdwn_flavor *

@@ -49,6 +49,7 @@ struct mdwn_theme {
     float blockquote_padding_y;
     float blockquote_border_width;
     float blockquote_margin;
+    float blockquote_margin_right;
     float list_indent;
     float list_item_spacing;
     float rule_margin;
@@ -68,5 +69,6 @@ struct mdwn_theme {
 
 extern const struct mdwn_theme mdwn_theme_github;
 extern const struct mdwn_theme mdwn_theme_gitlab;
+extern const struct mdwn_theme mdwn_theme_codeberg;
 
 #endif

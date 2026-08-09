@@ -1122,7 +1122,8 @@ layout_block(struct build_context *ctx, const struct mdwn_node *node,
         float inner_x = x + border_width + ctx->theme->blockquote_padding;
         float inner_width = fmaxf(
             width - border_width - ctx->theme->blockquote_padding
-                - ctx->theme->blockquote_padding_right,
+                - ctx->theme->blockquote_padding_right
+                - ctx->theme->blockquote_margin_right,
             1.0f);
 
         for (child = node->first_child; child; child = child->next)
