@@ -1,4 +1,4 @@
-`mdwn` is a fast and light Markdown viewer written entirely in C.
+`mdwn` is a fast and light Markdown viewer written in C.
 
 It supports different Markdown flavors:
 
