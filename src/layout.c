@@ -1,5 +1,6 @@
 #include "layout.h"
 
+#include "highlight.h"
 #include "layout_internal.h"
 
 #include <math.h>
@@ -166,10 +167,11 @@ gather_text(struct build_context *ctx, const struct mdwn_node *node, size_t *len
 }
 
 static char *
-expand_tabs(struct build_context *ctx, const char *line, size_t len, size_t *out_len)
+expand_tabs(struct build_context *ctx, const char *line, size_t len,
+            size_t *out_len, size_t *column)
 {
     size_t tabs = 0;
-    size_t i, col = 0, n = 0;
+    size_t i, col = *column, n = 0;
     char *out;
 
     for (i = 0; i < len; ++i) {
@@ -179,6 +181,7 @@ expand_tabs(struct build_context *ctx, const char *line, size_t len, size_t *out
 
     if (tabs == 0) {
         *out_len = len;
+        *column += len;
         return (char *)line;
     }
 
@@ -208,6 +211,7 @@ expand_tabs(struct build_context *ctx, const char *line, size_t len, size_t *out
 
     out[n] = '\0';
     *out_len = n;
+    *column = col;
     return out;
 }
 
@@ -215,7 +219,8 @@ static int
 add_direct_text(struct build_context *ctx,
                 const char *text, size_t len,
                 struct inline_style style,
-                float x, float baseline, float line_height)
+                float x, float baseline, float line_height,
+                float *advance)
 {
     struct mdwn_font *font = mdwn_layout_font_for_style(ctx, style);
     struct mdwn_shaped_glyph *glyphs;
@@ -234,8 +239,11 @@ add_direct_text(struct build_context *ctx,
         return -1;
     }
 
-    if (glyph_count == 0)
+    if (glyph_count == 0) {
+        if (advance)
+            *advance = 0.0f;
         return 0;
+    }
 
     item = mdwn_layout_new_item(ctx, MDWN_DRAW_TEXT);
     if (!item)
@@ -265,6 +273,77 @@ add_direct_text(struct build_context *ctx,
     item->as.text.color = style.color;
     item->as.text.strike = style.strike;
     item->as.text.underline = style.underline;
+    if (advance)
+        *advance = width;
+    return 0;
+}
+
+static struct mdwn_color
+highlight_color(const struct mdwn_theme *theme, enum mdwn_highlight_type type)
+{
+    switch (type) {
+    case MDWN_HIGHLIGHT_COMMENT:
+        return theme->syntax.comment;
+    case MDWN_HIGHLIGHT_KEYWORD:
+        return theme->syntax.keyword;
+    case MDWN_HIGHLIGHT_TYPE:
+        return theme->syntax.type;
+    case MDWN_HIGHLIGHT_STRING:
+        return theme->syntax.string;
+    case MDWN_HIGHLIGHT_REGEXP:
+        return theme->syntax.regexp;
+    case MDWN_HIGHLIGHT_SPECIAL_CHAR:
+        return theme->syntax.special_char;
+    case MDWN_HIGHLIGHT_NUMBER:
+        return theme->syntax.number;
+    case MDWN_HIGHLIGHT_PREPROCESSOR:
+        return theme->syntax.preprocessor;
+    case MDWN_HIGHLIGHT_SYMBOL:
+        return theme->syntax.symbol;
+    case MDWN_HIGHLIGHT_FUNCTION:
+        return theme->syntax.function;
+    case MDWN_HIGHLIGHT_CLASS:
+        return theme->syntax.class_name;
+    case MDWN_HIGHLIGHT_VARIABLE:
+        return theme->syntax.variable;
+    case MDWN_HIGHLIGHT_BUILTIN:
+        return theme->syntax.builtin;
+    case MDWN_HIGHLIGHT_NORMAL:
+    default:
+        return theme->text;
+    }
+}
+
+struct code_line_context {
+    struct build_context *ctx;
+    struct inline_style style;
+    float x;
+    float baseline;
+    float line_height;
+    size_t column;
+};
+
+static int
+add_highlighted_text(const char *text, size_t len,
+                     enum mdwn_highlight_type type, void *userdata)
+{
+    struct code_line_context *line = userdata;
+    size_t expanded_len;
+    char *expanded = expand_tabs(line->ctx, text, len, &expanded_len,
+                                 &line->column);
+    float advance;
+
+    if (!expanded)
+        return -1;
+    if (!expanded_len)
+        return 0;
+
+    line->style.color = highlight_color(line->ctx->theme, type);
+    if (add_direct_text(line->ctx, expanded, expanded_len, line->style,
+                        line->x, line->baseline, line->line_height,
+                        &advance) < 0)
+        return -1;
+    line->x += advance;
     return 0;
 }
 
@@ -284,6 +363,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     float baseline_offset;
     float box_height;
     float border = ctx->theme->code_border_width;
+    struct mdwn_highlighter *highlighter = NULL;
 
     style.family = MDWN_FONT_MONO;
     text = gather_text(ctx, node, &len);
@@ -321,28 +401,50 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
         fmaxf(ctx->theme->border_radius - border, 0.0f),
         ctx->theme->code_background);
 
+    if (!html && node->as.code_block.language)
+        highlighter = mdwn_highlighter_create(node->as.code_block.language);
+
     start = 0;
     {
         size_t line_index = 0;
         while (start <= len && line_index < lines) {
             size_t end = start;
-            size_t expanded_len;
-            char *expanded;
+            float baseline = y + border + ctx->theme->code_block_padding
+                + baseline_offset + line_height * (float)line_index;
 
             while (end < len && text[end] != '\n')
                 ++end;
 
-            expanded = expand_tabs(ctx, text + start, end - start, &expanded_len);
-            if (!expanded)
-                return y;
+            if (highlighter) {
+                struct code_line_context line;
 
-            if (expanded_len) {
-                float baseline = y + border + ctx->theme->code_block_padding
-                    + baseline_offset +
-                                 line_height * (float)line_index;
-                if (add_direct_text(ctx, expanded, expanded_len, style,
-                                    x + border + ctx->theme->code_block_padding,
-                                    baseline, line_height) < 0)
+                line.ctx = ctx;
+                line.style = style;
+                line.x = x + border + ctx->theme->code_block_padding;
+                line.baseline = baseline;
+                line.line_height = line_height;
+                line.column = 0;
+                if (mdwn_highlighter_highlight(
+                        highlighter, text + start, end - start,
+                        add_highlighted_text, &line) < 0) {
+                    mdwn_highlighter_destroy(highlighter);
+                    highlighter = NULL;
+                    if (ctx->failed)
+                        return y;
+                }
+            } else {
+                size_t expanded_len;
+                size_t column = 0;
+                char *expanded = expand_tabs(
+                    ctx, text + start, end - start, &expanded_len, &column);
+
+                if (!expanded)
+                    return y;
+                if (expanded_len &&
+                    add_direct_text(
+                        ctx, expanded, expanded_len, style,
+                        x + border + ctx->theme->code_block_padding,
+                        baseline, line_height, NULL) < 0)
                     return y;
             }
 
@@ -352,6 +454,8 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
             start = end + 1;
         }
     }
+
+    mdwn_highlighter_destroy(highlighter);
 
     return y + box_height + ctx->theme->block_spacing;
 }

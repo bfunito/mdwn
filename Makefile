@@ -1,14 +1,17 @@
 .POSIX:
 
 CC      ?= cc
+CXX     ?= c++
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 
-PKGS     = sdl3 md4c freetype2 harfbuzz fontconfig
+PKGS     = sdl3 md4c freetype2 harfbuzz fontconfig source-highlight
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L $(shell pkg-config --cflags $(PKGS))
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Wshadow
+CXXFLAGS ?= -O2 -g
+CXXFLAGS += -std=c++11 -Wall -Wextra -Wpedantic -Wshadow
 LDFLAGS ?=
 LDLIBS   = $(shell pkg-config --libs $(PKGS)) -lm
 
@@ -25,15 +28,19 @@ SRC = \
 	src/layout.c \
 	src/selection.c \
 	src/render.c
-OBJ = $(SRC:.c=.o)
+CXXSRC = src/highlight.cc
+OBJ = $(SRC:.c=.o) $(CXXSRC:.cc=.o)
 
 all: mdwn
 
 mdwn: $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
 
 .c.o:
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+.cc.o:
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 sanitize:
 	$(MAKE) clean

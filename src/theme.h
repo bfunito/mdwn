@@ -7,6 +7,22 @@ struct mdwn_color {
     uint8_t r, g, b, a;
 };
 
+struct mdwn_syntax_colors {
+    struct mdwn_color comment;
+    struct mdwn_color keyword;
+    struct mdwn_color type;
+    struct mdwn_color string;
+    struct mdwn_color regexp;
+    struct mdwn_color special_char;
+    struct mdwn_color number;
+    struct mdwn_color preprocessor;
+    struct mdwn_color symbol;
+    struct mdwn_color function;
+    struct mdwn_color class_name;
+    struct mdwn_color variable;
+    struct mdwn_color builtin;
+};
+
 struct mdwn_theme {
     const char *const *sans_fonts;
     const char *const *mono_fonts;
@@ -25,6 +41,7 @@ struct mdwn_theme {
     struct mdwn_color code_background;
     struct mdwn_color code_border;
     struct mdwn_color table_alt_background;
+    struct mdwn_syntax_colors syntax;
 
     float content_max_width;
     float outer_margin;
