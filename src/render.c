@@ -23,6 +23,8 @@
 #define WHEEL_ZOOM_SENSITIVITY 0.05f
 #define RASTER_ZOOM_STEP 0.25f
 
+static const struct mdwn_color scrollbar_color = { 139, 148, 158, 120 };
+
 struct glyph_texture {
     struct mdwn_font *font;
     uint32_t glyph_index;
@@ -58,6 +60,8 @@ struct viewer {
     bool dirty;
     bool quit;
     const char *pressed_link;
+    struct mdwn_code_block *dragged_code_block;
+    float code_drag_offset;
     SDL_Cursor *default_cursor;
     SDL_Cursor *text_cursor;
     SDL_Cursor *link_cursor;
@@ -79,6 +83,91 @@ document_y(const struct viewer *viewer, float y)
     return viewer->scroll_y + y / viewer->zoom;
 }
 
+static float
+code_block_max_scroll(const struct mdwn_code_block *block)
+{
+    return fmaxf(block->content_width - block->viewport_width, 0.0f);
+}
+
+static bool
+scrollbar_metrics(float length, float viewport, float content, float offset,
+                  float *position, float *size)
+{
+    if (content <= viewport || length <= 0.0f)
+        return false;
+
+    *size = fminf(length, fmaxf(32.0f, length * viewport / content));
+    *position = offset / (content - viewport) * (length - *size);
+    return true;
+}
+
+static struct mdwn_code_block *
+code_block_at(const struct mdwn_layout *layout, float x, float y)
+{
+    struct mdwn_code_block *block;
+
+    for (block = layout->first_code_block; block; block = block->next) {
+        if (code_block_max_scroll(block) > 0.0f &&
+            x >= block->x && x <= block->x + block->w &&
+            y >= block->y && y <= block->y + block->h)
+            return block;
+    }
+    return NULL;
+}
+
+static bool
+code_scrollbar_thumb(const struct mdwn_code_block *block, SDL_FRect *thumb)
+{
+    float max_scroll = code_block_max_scroll(block);
+    float track_x = block->clip_x + 2.0f;
+    float track_width = block->clip_w - 4.0f;
+    float position;
+
+    if (max_scroll <= 0.0f ||
+        !scrollbar_metrics(track_width, block->viewport_width,
+                           block->content_width, block->scroll_x,
+                           &position, &thumb->w))
+        return false;
+
+    thumb->x = track_x + position;
+    thumb->y = block->y + block->h - 6.0f;
+    thumb->h = 4.0f;
+    return true;
+}
+
+static struct mdwn_code_block *
+code_scrollbar_at(const struct mdwn_layout *layout, float x, float y,
+                  SDL_FRect *thumb)
+{
+    struct mdwn_code_block *block;
+
+    for (block = layout->first_code_block; block; block = block->next) {
+        if (x >= block->clip_x && x <= block->clip_x + block->clip_w &&
+            y >= block->y + block->h - 10.0f &&
+            y <= block->y + block->h &&
+            code_scrollbar_thumb(block, thumb))
+            return block;
+    }
+    return NULL;
+}
+
+static void
+set_code_scrollbar_position(struct mdwn_code_block *block, float thumb_x)
+{
+    SDL_FRect thumb;
+    float track_x = block->clip_x + 2.0f;
+    float travel;
+
+    if (!code_scrollbar_thumb(block, &thumb))
+        return;
+    travel = block->clip_w - 4.0f - thumb.w;
+    if (travel <= 0.0f)
+        return;
+    block->scroll_x = fminf(fmaxf(
+        (thumb_x - track_x) / travel * code_block_max_scroll(block),
+        0.0f), code_block_max_scroll(block));
+}
+
 static const struct mdwn_draw_item *
 text_at(const struct mdwn_layout *layout, float x, float y)
 {
@@ -86,11 +175,20 @@ text_at(const struct mdwn_layout *layout, float x, float y)
     const struct mdwn_draw_item *text = NULL;
 
     for (item = layout->first; item; item = item->next) {
-        if (item->type == MDWN_DRAW_TEXT &&
-            x >= item->as.text.x &&
-            x <= item->as.text.x + item->as.text.width &&
+        float text_x;
+
+        if (item->type != MDWN_DRAW_TEXT)
+            continue;
+        text_x = mdwn_layout_text_x(item);
+        if (x >= text_x &&
+            x <= text_x + item->as.text.width &&
             y >= item->as.text.top &&
             y <= item->as.text.top + item->as.text.line_height) {
+            if (item->as.text.code_block &&
+                (x < item->as.text.code_block->clip_x ||
+                 x > item->as.text.code_block->clip_x
+                    + item->as.text.code_block->clip_w))
+                continue;
             if (item->as.text.href)
                 return item;
             text = item;
@@ -178,6 +276,29 @@ static void
 set_draw_color(SDL_Renderer *renderer, struct mdwn_color color)
 {
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+}
+
+static int
+set_code_clip(struct viewer *viewer, const struct mdwn_code_block *block)
+{
+    SDL_Rect rect;
+    const SDL_Rect *clip = NULL;
+
+    if (block) {
+        float left = block->clip_x - viewer->scroll_x;
+        float top = block->y - viewer->scroll_y;
+
+        rect.x = (int)floorf(left);
+        rect.y = (int)floorf(top);
+        rect.w = (int)ceilf(left + block->clip_w) - rect.x;
+        rect.h = (int)ceilf(top + block->h) - rect.y;
+        clip = &rect;
+    }
+    if (!SDL_SetRenderClipRect(viewer->renderer, clip)) {
+        set_sdl_error(viewer, "could not set code block clipping");
+        return -1;
+    }
+    return 0;
 }
 
 static bool
@@ -384,7 +505,7 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
     const struct mdwn_color color = item->as.text.color;
     struct mdwn_font *font;
     float font_scale;
-    float pen_x = item->as.text.x - viewer->scroll_x;
+    float pen_x = mdwn_layout_text_x(item) - viewer->scroll_x;
     float pen_y = item->as.text.baseline - viewer->scroll_y;
     float viewport_width = (float)viewer->width / viewer->zoom;
     float viewport_height = (float)viewer->height / viewer->zoom;
@@ -438,8 +559,8 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
     if (item->as.text.strike) {
         float y = item->as.text.baseline - viewer->scroll_y - item->as.text.line_height * 0.20f;
         if (!SDL_RenderLine(viewer->renderer,
-                            item->as.text.x - viewer->scroll_x, y,
-                            item->as.text.x + item->as.text.width
+                            mdwn_layout_text_x(item) - viewer->scroll_x, y,
+                            mdwn_layout_text_x(item) + item->as.text.width
                                 - viewer->scroll_x, y)) {
             set_sdl_error(viewer, "could not render strikethrough");
             return -1;
@@ -448,8 +569,8 @@ draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
     if (item->as.text.underline) {
         float y = item->as.text.baseline - viewer->scroll_y + 2.0f;
         if (!SDL_RenderLine(viewer->renderer,
-                            item->as.text.x - viewer->scroll_x, y,
-                            item->as.text.x + item->as.text.width
+                            mdwn_layout_text_x(item) - viewer->scroll_x, y,
+                            mdwn_layout_text_x(item) + item->as.text.width
                                 - viewer->scroll_x, y)) {
             set_sdl_error(viewer, "could not render underline");
             return -1;
@@ -502,19 +623,12 @@ draw_scrollbar(struct viewer *viewer, bool horizontal)
     float viewport = window_size / viewer->zoom;
     float offset = horizontal ? viewer->scroll_x : viewer->scroll_y;
     float bar_size;
-    float travel;
-    float max_scroll;
     float position;
     SDL_FRect rect;
-    struct mdwn_color color = { 139, 148, 158, 120 };
 
-    if (content <= viewport || window_size <= 0.0f)
+    if (!scrollbar_metrics(window_size, viewport, content, offset,
+                           &position, &bar_size))
         return 0;
-
-    max_scroll = content - viewport;
-    bar_size = fmaxf(32.0f, window_size * viewport / content);
-    travel = window_size - bar_size;
-    position = offset / max_scroll * travel;
 
     if (horizontal) {
         rect.x = position + 2.0f;
@@ -528,10 +642,31 @@ draw_scrollbar(struct viewer *viewer, bool horizontal)
         rect.h = fmaxf(bar_size - 4.0f, 4.0f);
     }
 
-    set_draw_color(viewer->renderer, color);
+    set_draw_color(viewer->renderer, scrollbar_color);
     if (!SDL_RenderFillRect(viewer->renderer, &rect)) {
         set_sdl_error(viewer, "could not render scrollbar");
         return -1;
+    }
+    return 0;
+}
+
+static int
+draw_code_scrollbars(struct viewer *viewer)
+{
+    struct mdwn_code_block *block;
+
+    set_draw_color(viewer->renderer, scrollbar_color);
+    for (block = viewer->layout.first_code_block; block; block = block->next) {
+        SDL_FRect rect;
+
+        if (!code_scrollbar_thumb(block, &rect))
+            continue;
+        rect.x -= viewer->scroll_x;
+        rect.y -= viewer->scroll_y;
+        if (!SDL_RenderFillRect(viewer->renderer, &rect)) {
+            set_sdl_error(viewer, "could not render code block scrollbar");
+            return -1;
+        }
     }
     return 0;
 }
@@ -541,6 +676,7 @@ render_frame(struct viewer *viewer)
 {
     const struct mdwn_draw_item *item;
     struct mdwn_color background = viewer->theme->background;
+    const struct mdwn_code_block *clip = NULL;
     float viewport_width = (float)viewer->width / viewer->zoom;
     float viewport_height = (float)viewer->height / viewer->zoom;
 
@@ -556,6 +692,15 @@ render_frame(struct viewer *viewer)
     }
 
     for (item = viewer->layout.first; item; item = item->next) {
+        const struct mdwn_code_block *next_clip = item->type == MDWN_DRAW_TEXT
+            ? item->as.text.code_block
+            : NULL;
+
+        if (next_clip != clip) {
+            if (set_code_clip(viewer, next_clip) < 0)
+                return -1;
+            clip = next_clip;
+        }
         switch (item->type) {
         case MDWN_DRAW_RECT: {
             SDL_FRect rect;
@@ -590,9 +735,9 @@ render_frame(struct viewer *viewer)
             break;
         }
         case MDWN_DRAW_TEXT:
-            if (item->as.text.x - viewer->scroll_x
+            if (mdwn_layout_text_x(item) - viewer->scroll_x
                     + item->as.text.width < 0.0f ||
-                item->as.text.x - viewer->scroll_x > viewport_width ||
+                mdwn_layout_text_x(item) - viewer->scroll_x > viewport_width ||
                 item->as.text.baseline - viewer->scroll_y + item->as.text.line_height < 0.0f ||
                 item->as.text.baseline - viewer->scroll_y - item->as.text.line_height > viewport_height)
                 break;
@@ -603,6 +748,12 @@ render_frame(struct viewer *viewer)
             break;
         }
     }
+
+    if (clip && set_code_clip(viewer, NULL) < 0)
+        return -1;
+
+    if (draw_code_scrollbars(viewer) < 0)
+        return -1;
 
     if (!SDL_SetRenderScale(viewer->renderer, 1.0f, 1.0f)) {
         set_sdl_error(viewer, "could not reset document zoom");
@@ -640,8 +791,9 @@ clamp_scroll(struct viewer *viewer)
 static int
 rebuild_layout(struct viewer *viewer)
 {
-    if (viewer->selection.dragging)
+    if (viewer->selection.dragging || viewer->dragged_code_block)
         (void)SDL_CaptureMouse(false);
+    viewer->dragged_code_block = NULL;
 
     if (!SDL_GetWindowSize(viewer->window, &viewer->width, &viewer->height)) {
         set_sdl_error(viewer, "could not query window size");
@@ -672,6 +824,21 @@ scroll_by(struct viewer *viewer, float x, float y)
     viewer->scroll_y += y / viewer->zoom;
     clamp_scroll(viewer);
     if (viewer->scroll_x != old_x || viewer->scroll_y != old_y) {
+        viewer->dirty = true;
+        update_cursor_at_mouse(viewer);
+    }
+}
+
+static void
+scroll_code_block(struct viewer *viewer, struct mdwn_code_block *block,
+                  float amount)
+{
+    float old_x = block->scroll_x;
+
+    block->scroll_x = fminf(fmaxf(
+        block->scroll_x + amount / viewer->zoom, 0.0f),
+        code_block_max_scroll(block));
+    if (block->scroll_x != old_x) {
         viewer->dirty = true;
         update_cursor_at_mouse(viewer);
     }
@@ -736,9 +903,19 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
                                  dy * WHEEL_ZOOM_SENSITIVITY),
                     event->wheel.mouse_x, event->wheel.mouse_y);
         } else {
+            struct mdwn_code_block *block;
+
             if (modifiers & SDL_KMOD_SHIFT) {
                 dx += dy;
                 dy = 0.0f;
+            }
+            block = code_block_at(
+                &viewer->layout,
+                document_x(viewer, event->wheel.mouse_x),
+                document_y(viewer, event->wheel.mouse_y));
+            if (block && dx != 0.0f) {
+                scroll_code_block(viewer, block, dx * SCROLL_STEP);
+                dx = 0.0f;
             }
             scroll_by(viewer, dx * SCROLL_STEP, -dy * SCROLL_STEP);
         }
@@ -767,13 +944,27 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (event->button.button == SDL_BUTTON_LEFT) {
+            SDL_FRect thumb;
+            float x = document_x(viewer, event->button.x);
+            float y = document_y(viewer, event->button.y);
+            struct mdwn_code_block *block = code_scrollbar_at(
+                &viewer->layout, x, y, &thumb);
+
+            if (block) {
+                if (x < thumb.x || x > thumb.x + thumb.w) {
+                    set_code_scrollbar_position(block, x - thumb.w * 0.5f);
+                    (void)code_scrollbar_thumb(block, &thumb);
+                    viewer->dirty = true;
+                }
+                viewer->dragged_code_block = block;
+                viewer->code_drag_offset = x - thumb.x;
+                (void)SDL_CaptureMouse(true);
+                break;
+            }
             viewer->pressed_link = link_at(
-                &viewer->layout, document_x(viewer, event->button.x),
-                document_y(viewer, event->button.y));
+                &viewer->layout, x, y);
             if (mdwn_selection_begin(&viewer->selection, &viewer->layout,
-                                     document_x(viewer, event->button.x),
-                                     document_y(viewer, event->button.y),
-                                     event->button.clicks))
+                                     x, y, event->button.clicks))
                 (void)SDL_CaptureMouse(true);
             viewer->dirty = true;
         }
@@ -781,7 +972,13 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_MOTION:
         update_cursor(viewer, event->motion.x, event->motion.y);
-        if (viewer->selection.dragging) {
+        if (viewer->dragged_code_block) {
+            set_code_scrollbar_position(
+                viewer->dragged_code_block,
+                document_x(viewer, event->motion.x)
+                    - viewer->code_drag_offset);
+            viewer->dirty = true;
+        } else if (viewer->selection.dragging) {
             if (mdwn_selection_update(&viewer->selection, &viewer->layout,
                                       document_x(viewer, event->motion.x),
                                       document_y(viewer, event->motion.y)))
@@ -791,6 +988,12 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (event->button.button == SDL_BUTTON_LEFT) {
+            if (viewer->dragged_code_block) {
+                viewer->dragged_code_block = NULL;
+                (void)SDL_CaptureMouse(false);
+                update_cursor_at_mouse(viewer);
+                break;
+            }
             const char *released_link = link_at(
                 &viewer->layout, document_x(viewer, event->button.x),
                 document_y(viewer, event->button.y));

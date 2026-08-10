@@ -3,6 +3,7 @@
 #include "layout.h"
 
 #include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +64,7 @@ mdwn_selection_item_range(const struct mdwn_selection *selection,
 float
 mdwn_selection_text_x_at(const struct mdwn_draw_item *item, size_t offset)
 {
-    float x = item->as.text.x;
+    float x = mdwn_layout_text_x(item);
     size_t i;
 
     for (i = 0; i < item->as.text.glyph_count; ++i) {
@@ -79,7 +80,7 @@ mdwn_selection_text_x_at(const struct mdwn_draw_item *item, size_t offset)
 static size_t
 text_offset_at(const struct mdwn_draw_item *item, float x)
 {
-    float pen = item->as.text.x;
+    float pen = mdwn_layout_text_x(item);
     size_t i;
 
     if (x <= pen)
@@ -114,10 +115,19 @@ find_text_position(const struct mdwn_layout *layout, float x, float y,
         if (item->type != MDWN_DRAW_TEXT)
             continue;
 
-        left = item->as.text.x;
+        left = mdwn_layout_text_x(item);
         right = left + item->as.text.width;
         top = item->as.text.top;
         bottom = top + item->as.text.line_height;
+
+        if (item->as.text.code_block) {
+            const struct mdwn_code_block *block = item->as.text.code_block;
+
+            left = fmaxf(left, block->clip_x);
+            right = fminf(right, block->clip_x + block->clip_w);
+            if (left > right)
+                continue;
+        }
 
         dx = x < left ? left - x : x > right ? x - right : 0.0f;
         dy = y < top ? top - y : y > bottom ? y - bottom : 0.0f;
@@ -188,7 +198,7 @@ is_word_character(const char *text, size_t length, size_t offset)
 static size_t
 character_at_x(const struct mdwn_draw_item *item, float x)
 {
-    float pen = item->as.text.x;
+    float pen = mdwn_layout_text_x(item);
     size_t offset = 0;
     size_t i;
 

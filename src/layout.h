@@ -11,6 +11,14 @@
 struct mdwn_document;
 struct mdwn_font_system;
 
+struct mdwn_code_block {
+    struct mdwn_code_block *next;
+    float x, y, w, h;
+    float clip_x, clip_w;
+    float content_x, viewport_width, content_width;
+    float scroll_x;
+};
+
 enum mdwn_draw_type {
     MDWN_DRAW_TEXT,
     MDWN_DRAW_RECT,
@@ -36,6 +44,7 @@ struct mdwn_draw_item {
             float width;
             float line_height;
             struct mdwn_color color;
+            struct mdwn_code_block *code_block;
             bool strike;
             bool underline;
         } text;
@@ -57,12 +66,16 @@ struct mdwn_layout {
     struct mdwn_arena arena;
     struct mdwn_draw_item *first;
     struct mdwn_draw_item *last;
+    struct mdwn_code_block *first_code_block;
+    struct mdwn_code_block *last_code_block;
     size_t text_count;
     float content_width;
     float content_height;
     int viewport_width;
     int viewport_height;
 };
+
+float mdwn_layout_text_x(const struct mdwn_draw_item *item);
 
 void mdwn_layout_init(struct mdwn_layout *layout);
 void mdwn_layout_destroy(struct mdwn_layout *layout);

@@ -220,7 +220,7 @@ add_direct_text(struct build_context *ctx,
                 const char *text, size_t len,
                 struct inline_style style,
                 float x, float baseline, float line_height,
-                float *advance)
+                float *advance, struct mdwn_code_block *code_block)
 {
     struct mdwn_font *font = mdwn_layout_font_for_style(ctx, style);
     struct mdwn_shaped_glyph *glyphs;
@@ -271,11 +271,25 @@ add_direct_text(struct build_context *ctx,
     item->as.text.width = width;
     item->as.text.line_height = line_height;
     item->as.text.color = style.color;
+    item->as.text.code_block = code_block;
     item->as.text.strike = style.strike;
     item->as.text.underline = style.underline;
+    if (code_block) {
+        code_block->content_width = fmaxf(
+            code_block->content_width,
+            x - code_block->content_x + width);
+    }
     if (advance)
         *advance = width;
     return 0;
+}
+
+float
+mdwn_layout_text_x(const struct mdwn_draw_item *item)
+{
+    return item->as.text.x - (item->as.text.code_block
+        ? item->as.text.code_block->scroll_x
+        : 0.0f);
 }
 
 static struct mdwn_color
@@ -317,6 +331,7 @@ highlight_color(const struct mdwn_theme *theme, enum mdwn_highlight_type type)
 struct code_line_context {
     struct build_context *ctx;
     struct inline_style style;
+    struct mdwn_code_block *code_block;
     float x;
     float baseline;
     float line_height;
@@ -341,7 +356,7 @@ add_highlighted_text(const char *text, size_t len,
     line->style.color = highlight_color(line->ctx->theme, type);
     if (add_direct_text(line->ctx, expanded, expanded_len, line->style,
                         line->x, line->baseline, line->line_height,
-                        &advance) < 0)
+                        &advance, line->code_block) < 0)
         return -1;
     line->x += advance;
     return 0;
@@ -364,6 +379,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     float box_height;
     float border = ctx->theme->code_border_width;
     struct mdwn_highlighter *highlighter = NULL;
+    struct mdwn_code_block *code_block;
 
     style.family = MDWN_FONT_MONO;
     text = gather_text(ctx, node, &len);
@@ -388,6 +404,29 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     box_height = border * 2.0f
         + ctx->theme->code_block_padding * 2.0f
         + line_height * (float)lines;
+
+    code_block = mdwn_arena_alloc(&ctx->layout->arena, sizeof(*code_block));
+    if (!code_block) {
+        mdwn_layout_set_error(ctx, "out of memory while building code block");
+        return y;
+    }
+    memset(code_block, 0, sizeof(*code_block));
+    code_block->x = x;
+    code_block->y = y;
+    code_block->w = width;
+    code_block->h = box_height;
+    code_block->clip_x = x + border;
+    code_block->clip_w = width - border * 2.0f;
+    code_block->content_x = code_block->clip_x
+        + ctx->theme->code_block_padding;
+    code_block->viewport_width = fmaxf(
+        code_block->clip_w - ctx->theme->code_block_padding * 2.0f,
+        1.0f);
+    if (ctx->layout->last_code_block)
+        ctx->layout->last_code_block->next = code_block;
+    else
+        ctx->layout->first_code_block = code_block;
+    ctx->layout->last_code_block = code_block;
 
     if (border > 0.0f) {
         mdwn_layout_add_rect_with_radius(ctx, x, y, width, box_height,
@@ -420,6 +459,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
 
                 line.ctx = ctx;
                 line.style = style;
+                line.code_block = code_block;
                 line.x = x + border + ctx->theme->code_block_padding;
                 line.baseline = baseline;
                 line.line_height = line_height;
@@ -444,7 +484,7 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                     add_direct_text(
                         ctx, expanded, expanded_len, style,
                         x + border + ctx->theme->code_block_padding,
-                        baseline, line_height, NULL) < 0)
+                        baseline, line_height, NULL, code_block) < 0)
                     return y;
             }
 
@@ -963,6 +1003,8 @@ mdwn_layout_build(struct mdwn_layout *layout,
     mdwn_arena_init(&layout->arena, 64 * 1024);
     layout->first = NULL;
     layout->last = NULL;
+    layout->first_code_block = NULL;
+    layout->last_code_block = NULL;
     layout->text_count = 0;
     layout->content_width = (float)viewport_width;
     layout->viewport_width = viewport_width;
@@ -999,7 +1041,9 @@ mdwn_layout_build(struct mdwn_layout *layout,
 
         switch (item->type) {
         case MDWN_DRAW_TEXT:
-            right = item->as.text.x + item->as.text.width;
+            right = item->as.text.code_block
+                ? item->as.text.code_block->x + item->as.text.code_block->w
+                : item->as.text.x + item->as.text.width;
             break;
         case MDWN_DRAW_RECT:
             right = item->as.rect.x + item->as.rect.w;
