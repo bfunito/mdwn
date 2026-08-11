@@ -39,8 +39,9 @@ bool mdwn_selection_select_all(struct mdwn_selection *selection,
 bool mdwn_selection_item_range(const struct mdwn_selection *selection,
                                const struct mdwn_draw_item *item,
                                size_t *start_offset, size_t *end_offset);
-float mdwn_selection_text_x_at(const struct mdwn_draw_item *item,
-                               size_t offset);
+bool mdwn_selection_text_bounds(const struct mdwn_draw_item *item,
+                                size_t offset, size_t length,
+                                float *x, float *width);
 char *mdwn_selection_text(const struct mdwn_selection *selection,
                           const struct mdwn_layout *layout);
 

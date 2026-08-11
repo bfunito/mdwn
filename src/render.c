@@ -9,7 +9,6 @@
 #include <SDL3/SDL.h>
 
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,28 +24,12 @@
 
 static const struct mdwn_color scrollbar_color = { 139, 148, 158, 120 };
 
-struct glyph_texture {
-    struct mdwn_font *font;
-    uint32_t glyph_index;
-    SDL_Texture *texture;
-    int width;
-    int height;
-    int left;
-    int top;
-};
-
-struct glyph_cache {
-    struct glyph_texture *items;
-    size_t count;
-    size_t capacity;
-};
-
 struct viewer {
     SDL_Window *window;
     SDL_Renderer *renderer;
+    TTF_TextEngine *text_engine;
     struct mdwn_font_system *fonts;
     struct mdwn_layout layout;
-    struct glyph_cache glyphs;
     struct mdwn_selection selection;
     const struct mdwn_document *doc;
     const struct mdwn_theme *theme;
@@ -259,13 +242,6 @@ copy_selection(struct viewer *viewer, bool primary)
 }
 
 static void
-set_error(struct viewer *viewer, const char *message)
-{
-    if (viewer->err && viewer->err_size)
-        snprintf(viewer->err, viewer->err_size, "%s", message);
-}
-
-static void
 set_sdl_error(struct viewer *viewer, const char *operation)
 {
     if (viewer->err && viewer->err_size)
@@ -340,243 +316,58 @@ fill_rounded_rect(SDL_Renderer *renderer, const SDL_FRect *rect, float radius)
     return true;
 }
 
-static void
-glyph_cache_destroy(struct glyph_cache *cache)
-{
-    size_t i;
-
-    for (i = 0; i < cache->count; ++i) {
-        if (cache->items[i].texture)
-            SDL_DestroyTexture(cache->items[i].texture);
-    }
-
-    free(cache->items);
-    memset(cache, 0, sizeof(*cache));
-}
-
-static struct glyph_texture *
-glyph_cache_find(struct glyph_cache *cache, struct mdwn_font *font,
-                 uint32_t glyph_index)
-{
-    size_t i;
-
-    for (i = 0; i < cache->count; ++i) {
-        if (cache->items[i].font == font &&
-            cache->items[i].glyph_index == glyph_index)
-            return &cache->items[i];
-    }
-    return NULL;
-}
-
 static int
-grow_glyph_cache(struct viewer *viewer)
-{
-    size_t capacity = viewer->glyphs.capacity ? viewer->glyphs.capacity * 2 : 128;
-    struct glyph_texture *items;
-
-    if (capacity < viewer->glyphs.capacity ||
-        capacity > SIZE_MAX / sizeof(*items)) {
-        set_error(viewer, "glyph cache is too large");
-        return -1;
-    }
-
-    items = realloc(viewer->glyphs.items, capacity * sizeof(*items));
-    if (!items) {
-        set_error(viewer, "out of memory while growing glyph cache");
-        return -1;
-    }
-
-    viewer->glyphs.items = items;
-    viewer->glyphs.capacity = capacity;
-    return 0;
-}
-
-static unsigned char
-gray_alpha(const struct mdwn_glyph_bitmap *bitmap, const unsigned char *row, int x)
-{
-    if (bitmap->format == MDWN_BITMAP_MONO) {
-        unsigned char byte = row[x >> 3];
-        unsigned mask = 0x80u >> (unsigned)(x & 7);
-        return (byte & mask) ? 255 : 0;
-    }
-
-    if (bitmap->num_grays > 1 && bitmap->num_grays != 256)
-        return (unsigned char)((unsigned)row[x] * 255u / (bitmap->num_grays - 1u));
-    return row[x];
-}
-
-static struct glyph_texture *
-glyph_cache_create(struct viewer *viewer, struct mdwn_font *font,
-                   uint32_t glyph_index)
-{
-    struct mdwn_glyph_bitmap bitmap;
-    struct glyph_texture *entry;
-    unsigned char *pixels = NULL;
-    SDL_Texture *texture = NULL;
-    size_t pixel_count;
-    int y, x;
-
-    if (mdwn_font_render_glyph(font, glyph_index, &bitmap,
-                               viewer->err, viewer->err_size) < 0)
-        return NULL;
-
-    if (viewer->glyphs.count == viewer->glyphs.capacity && grow_glyph_cache(viewer) < 0)
-        return NULL;
-
-    entry = &viewer->glyphs.items[viewer->glyphs.count++];
-    memset(entry, 0, sizeof(*entry));
-    entry->font = font;
-    entry->glyph_index = glyph_index;
-    entry->width = bitmap.width;
-    entry->height = bitmap.height;
-    entry->left = bitmap.left;
-    entry->top = bitmap.top;
-
-    if (bitmap.width <= 0 || bitmap.height <= 0)
-        return entry;
-
-    if ((size_t)bitmap.width > SIZE_MAX / (size_t)bitmap.height / 4u) {
-        set_error(viewer, "glyph bitmap is too large");
-        return NULL;
-    }
-
-    pixel_count = (size_t)bitmap.width * (size_t)bitmap.height;
-    pixels = malloc(pixel_count * 4u);
-    if (!pixels) {
-        set_error(viewer, "out of memory while rasterizing glyph");
-        return NULL;
-    }
-
-    for (y = 0; y < bitmap.height; ++y) {
-        const unsigned char *row;
-
-        if (bitmap.pitch >= 0)
-            row = bitmap.buffer + (size_t)y * (size_t)bitmap.pitch;
-        else
-            row = bitmap.buffer + (size_t)(bitmap.height - 1 - y) * (size_t)(-bitmap.pitch);
-
-        for (x = 0; x < bitmap.width; ++x) {
-            size_t p = ((size_t)y * (size_t)bitmap.width + (size_t)x) * 4u;
-            unsigned char alpha = gray_alpha(&bitmap, row, x);
-            pixels[p + 0] = 255;
-            pixels[p + 1] = 255;
-            pixels[p + 2] = 255;
-            pixels[p + 3] = alpha;
-        }
-    }
-
-    texture = SDL_CreateTexture(viewer->renderer, SDL_PIXELFORMAT_RGBA32,
-                                SDL_TEXTUREACCESS_STATIC,
-                                bitmap.width, bitmap.height);
-    if (!texture) {
-        free(pixels);
-        set_sdl_error(viewer, "could not create glyph texture");
-        return NULL;
-    }
-
-    if (!SDL_UpdateTexture(texture, NULL, pixels, bitmap.width * 4)) {
-        SDL_DestroyTexture(texture);
-        free(pixels);
-        set_sdl_error(viewer, "could not upload glyph texture");
-        return NULL;
-    }
-    free(pixels);
-
-    if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) {
-        SDL_DestroyTexture(texture);
-        set_sdl_error(viewer, "could not configure glyph texture");
-        return NULL;
-    }
-
-    entry->texture = texture;
-    return entry;
-}
-
-static struct glyph_texture *
-get_glyph(struct viewer *viewer, struct mdwn_font *font, uint32_t glyph_index)
-{
-    struct glyph_texture *glyph = glyph_cache_find(&viewer->glyphs, font, glyph_index);
-    return glyph ? glyph : glyph_cache_create(viewer, font, glyph_index);
-}
-
-static int
-draw_text(struct viewer *viewer, const struct mdwn_draw_item *item)
+draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
 {
     const struct mdwn_color color = item->as.text.color;
-    struct mdwn_font *font;
-    float font_scale;
-    float pen_x = mdwn_layout_text_x(item) - viewer->scroll_x;
-    float pen_y = item->as.text.baseline - viewer->scroll_y;
-    float viewport_width = (float)viewer->width / viewer->zoom;
-    float viewport_height = (float)viewer->height / viewer->zoom;
-    size_t i;
+    float scale = item->as.text.raster_scale;
+    float x_scale = item->as.text.raster_x_scale;
+    float x, y;
 
-    font = mdwn_font_get_scaled(viewer->fonts, item->as.text.font,
-                                viewer->raster_zoom, &font_scale,
-                                viewer->err, viewer->err_size);
-    if (!font)
+    if (!item->as.text.render_object) {
+        struct mdwn_font *font = mdwn_font_get_scaled(
+            viewer->fonts, item->as.text.font, viewer->raster_zoom,
+            &scale, viewer->err, viewer->err_size);
+        int width;
+
+        if (!font)
+            return -1;
+        item->as.text.render_object = TTF_CreateText(
+            viewer->text_engine, mdwn_font_handle(font),
+            item->as.text.object->text, item->as.text.text_length);
+        if (!item->as.text.render_object ||
+            !TTF_SetTextColor(item->as.text.render_object,
+                              color.r, color.g, color.b, color.a) ||
+            !TTF_GetTextSize(item->as.text.render_object, &width, NULL)) {
+            set_sdl_error(viewer, "could not prepare text");
+            return -1;
+        }
+        x_scale = width > 0
+            ? item->as.text.width * scale / (float)width
+            : 1.0f;
+        item->as.text.raster_scale = scale;
+        item->as.text.raster_x_scale = x_scale;
+    }
+
+    if (!SDL_SetRenderScale(viewer->renderer,
+                            viewer->zoom * x_scale / scale,
+                            viewer->zoom / scale)) {
+        set_sdl_error(viewer, "could not set text scale");
         return -1;
-
-    for (i = 0; i < item->as.text.glyph_count; ++i) {
-        const struct mdwn_shaped_glyph *g = &item->as.text.glyphs[i];
-        if (pen_x + item->as.text.line_height >= 0.0f &&
-            pen_x <= viewport_width) {
-            struct glyph_texture *texture = get_glyph(viewer, font, g->index);
-
-            if (!texture)
-                return -1;
-
-            if (texture->texture && texture->width > 0 && texture->height > 0) {
-                SDL_FRect dst;
-
-                dst.x = roundf((pen_x + g->x_offset
-                                + (float)texture->left / font_scale)
-                               * viewer->zoom) / viewer->zoom;
-                dst.y = roundf((pen_y - g->y_offset
-                                - (float)texture->top / font_scale)
-                               * viewer->zoom) / viewer->zoom;
-                dst.w = (float)texture->width / font_scale;
-                dst.h = (float)texture->height / font_scale;
-
-                if (dst.y + dst.h >= 0.0f && dst.y <= viewport_height) {
-                    if (!SDL_SetTextureColorMod(texture->texture,
-                                                color.r, color.g, color.b) ||
-                        !SDL_SetTextureAlphaMod(texture->texture, color.a) ||
-                        !SDL_RenderTexture(viewer->renderer,
-                                           texture->texture, NULL, &dst)) {
-                        set_sdl_error(viewer, "could not render glyph");
-                        return -1;
-                    }
-                }
-            }
-        }
-
-        pen_x += g->x_advance;
-        pen_y -= g->y_advance;
     }
 
-    set_draw_color(viewer->renderer, color);
-    if (item->as.text.strike) {
-        float y = item->as.text.baseline - viewer->scroll_y - item->as.text.line_height * 0.20f;
-        if (!SDL_RenderLine(viewer->renderer,
-                            mdwn_layout_text_x(item) - viewer->scroll_x, y,
-                            mdwn_layout_text_x(item) + item->as.text.width
-                                - viewer->scroll_x, y)) {
-            set_sdl_error(viewer, "could not render strikethrough");
-            return -1;
-        }
+    x = (mdwn_layout_text_x(item) - viewer->scroll_x) * scale / x_scale;
+    y = (item->as.text.baseline - viewer->scroll_y) * scale
+        - (float)TTF_GetFontAscent(
+            TTF_GetTextFont(item->as.text.render_object));
+    if (!TTF_DrawRendererText(item->as.text.render_object, x, y)) {
+        set_sdl_error(viewer, "could not render text");
+        return -1;
     }
-    if (item->as.text.underline) {
-        float y = item->as.text.baseline - viewer->scroll_y + 2.0f;
-        if (!SDL_RenderLine(viewer->renderer,
-                            mdwn_layout_text_x(item) - viewer->scroll_x, y,
-                            mdwn_layout_text_x(item) + item->as.text.width
-                                - viewer->scroll_x, y)) {
-            set_sdl_error(viewer, "could not render underline");
-            return -1;
-        }
+    if (!SDL_SetRenderScale(viewer->renderer, viewer->zoom, viewer->zoom)) {
+        set_sdl_error(viewer, "could not restore document scale");
+        return -1;
     }
-
     return 0;
 }
 
@@ -586,17 +377,17 @@ draw_text_selection(struct viewer *viewer,
 {
     struct mdwn_color color = { 51, 132, 255, 110 };
     size_t start, end;
-    float x1, x2;
+    float x, width;
     SDL_FRect rect;
 
     if (!mdwn_selection_item_range(&viewer->selection, item, &start, &end))
         return 0;
 
-    x1 = mdwn_selection_text_x_at(item, start);
-    x2 = mdwn_selection_text_x_at(item, end);
-    rect.x = fminf(x1, x2) - viewer->scroll_x;
+    if (!mdwn_selection_text_bounds(item, start, end - start, &x, &width))
+        return 0;
+    rect.x = x - viewer->scroll_x;
     rect.y = item->as.text.top - viewer->scroll_y;
-    rect.w = fabsf(x2 - x1);
+    rect.w = width;
     rect.h = item->as.text.line_height;
 
     if (rect.w <= 0.0f || rect.y + rect.h < 0.0f ||
@@ -674,7 +465,7 @@ draw_code_scrollbars(struct viewer *viewer)
 static int
 render_frame(struct viewer *viewer)
 {
-    const struct mdwn_draw_item *item;
+    struct mdwn_draw_item *item;
     struct mdwn_color background = viewer->theme->background;
     const struct mdwn_code_block *clip = NULL;
     float viewport_width = (float)viewer->width / viewer->zoom;
@@ -863,7 +654,7 @@ zoom_at(struct viewer *viewer, float factor, float x, float y)
     viewer->scroll_y = anchor_y - y / zoom;
     raster_zoom = roundf(zoom / RASTER_ZOOM_STEP) * RASTER_ZOOM_STEP;
     if (raster_zoom != viewer->raster_zoom) {
-        glyph_cache_destroy(&viewer->glyphs);
+        mdwn_layout_clear_render_text(&viewer->layout);
         viewer->raster_zoom = raster_zoom;
     }
     clamp_scroll(viewer);
@@ -1077,8 +868,9 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 static void
 viewer_cleanup(struct viewer *viewer)
 {
-    glyph_cache_destroy(&viewer->glyphs);
     mdwn_layout_destroy(&viewer->layout);
+    if (viewer->text_engine)
+        TTF_DestroyRendererTextEngine(viewer->text_engine);
     mdwn_font_system_destroy(viewer->fonts);
     if (viewer->link_cursor)
         SDL_DestroyCursor(viewer->link_cursor);
@@ -1150,6 +942,12 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     SDL_RenderPresent(viewer.renderer);
 
     if (mdwn_font_system_create(&viewer.fonts, theme, err, err_size) < 0) {
+        viewer_cleanup(&viewer);
+        return -1;
+    }
+    viewer.text_engine = TTF_CreateRendererTextEngine(viewer.renderer);
+    if (!viewer.text_engine) {
+        set_sdl_error(&viewer, "could not create text engine");
         viewer_cleanup(&viewer);
         return -1;
     }

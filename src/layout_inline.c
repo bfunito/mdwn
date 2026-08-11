@@ -69,9 +69,10 @@ flow_place_token(struct inline_flow *flow,
                  bool is_space)
 {
     struct mdwn_font *font;
-    struct mdwn_shaped_glyph *glyphs = NULL;
-    size_t glyph_count = 0;
+    TTF_Text *object;
+    size_t cluster_count = 0;
     float width = 0.0f;
+    float natural_width;
     float padding = style.code_background
         ? flow->ctx->theme->inline_code_padding
         : 0.0f;
@@ -90,29 +91,20 @@ flow_place_token(struct inline_flow *flow,
     if (!font)
         return -1;
 
-    if (flow->emit) {
-        if (mdwn_font_shape(font, text, len, &flow->ctx->layout->arena,
-                            &glyphs, &glyph_count, &width,
-                            flow->ctx->err, flow->ctx->err_size) < 0) {
-            flow->ctx->failed = 1;
-            return -1;
-        }
-    } else {
-        if (mdwn_font_shape(font, text, len, NULL, NULL, &glyph_count,
-                            &width,
-                            flow->ctx->err, flow->ctx->err_size) < 0) {
-            flow->ctx->failed = 1;
-            return -1;
-        }
+    object = mdwn_font_create_text(
+        font, text, len, &width,
+        style.letter_spacing_em != 0.0f ? &cluster_count : NULL,
+        flow->ctx->err, flow->ctx->err_size);
+    if (!object) {
+        flow->ctx->failed = 1;
+        return -1;
     }
+    natural_width = width;
 
-    if (glyph_count && style.letter_spacing_em != 0.0f) {
+    if (cluster_count && style.letter_spacing_em != 0.0f) {
         float spacing = style.letter_spacing_em * (float)style.size_px;
-        size_t i;
 
-        width += spacing * (float)glyph_count;
-        for (i = 0; glyphs && i < glyph_count; ++i)
-            glyphs[i].x_advance += spacing;
+        width += spacing * (float)cluster_count;
     }
 
     advance = width + padding * 2.0f;
@@ -123,6 +115,7 @@ flow_place_token(struct inline_flow *flow,
     }
 
     if (is_space && flow->x + advance > flow->x0 + flow->width) {
+        TTF_DestroyText(object);
         flow_newline(flow);
         return 0;
     }
@@ -144,25 +137,15 @@ flow_place_token(struct inline_flow *flow,
             flow->ctx->theme->border_radius,
             flow->ctx->theme->inline_code_background);
 
-    if (flow->emit && glyph_count) {
-        char *stored_text;
-
+    if (flow->emit) {
         item = mdwn_layout_new_item(flow->ctx, MDWN_DRAW_TEXT);
-        if (!item)
-            return -1;
-
-        stored_text = mdwn_arena_alloc(&flow->ctx->layout->arena, len);
-        if (!stored_text) {
-            mdwn_layout_set_error(
-                flow->ctx, "out of memory while storing text layout");
+        if (!item) {
+            TTF_DestroyText(object);
             return -1;
         }
-        memcpy(stored_text, text, len);
 
         item->as.text.font = font;
-        item->as.text.glyphs = glyphs;
-        item->as.text.glyph_count = glyph_count;
-        item->as.text.text = stored_text;
+        item->as.text.object = object;
         item->as.text.href = style.href;
         item->as.text.text_length = len;
         item->as.text.order = flow->ctx->layout->text_count++;
@@ -171,10 +154,12 @@ flow_place_token(struct inline_flow *flow,
         item->as.text.baseline = baseline;
         item->as.text.width = width;
         item->as.text.line_height = flow->line_height;
+        item->as.text.layout_x_scale = natural_width > 0.0f
+            ? width / natural_width
+            : 1.0f;
         item->as.text.color = style.color;
-        item->as.text.strike = style.strike;
-        item->as.text.underline = style.underline;
-    }
+    } else
+        TTF_DestroyText(object);
 
     flow->x += advance;
     flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);

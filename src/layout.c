@@ -97,6 +97,8 @@ mdwn_layout_font_for_style(struct build_context *ctx,
     spec.size_px = style.size_px;
     spec.weight = style.weight;
     spec.italic = style.italic;
+    spec.strike = style.strike;
+    spec.underline = style.underline;
 
     font = mdwn_font_get(ctx->fonts, spec, ctx->err, ctx->err_size);
     if (!font)
@@ -223,43 +225,28 @@ add_direct_text(struct build_context *ctx,
                 float *advance, struct mdwn_code_block *code_block)
 {
     struct mdwn_font *font = mdwn_layout_font_for_style(ctx, style);
-    struct mdwn_shaped_glyph *glyphs;
-    size_t glyph_count;
+    TTF_Text *object;
     float width;
     struct mdwn_draw_item *item;
-    char *stored_text;
 
     if (!font)
         return -1;
 
-    if (mdwn_font_shape(font, text, len, &ctx->layout->arena,
-                        &glyphs, &glyph_count, &width,
-                        ctx->err, ctx->err_size) < 0) {
+    object = mdwn_font_create_text(font, text, len, &width, NULL,
+                                   ctx->err, ctx->err_size);
+    if (!object) {
         ctx->failed = 1;
         return -1;
     }
 
-    if (glyph_count == 0) {
-        if (advance)
-            *advance = 0.0f;
-        return 0;
-    }
-
     item = mdwn_layout_new_item(ctx, MDWN_DRAW_TEXT);
-    if (!item)
-        return -1;
-
-    stored_text = mdwn_arena_alloc(&ctx->layout->arena, len);
-    if (!stored_text) {
-        mdwn_layout_set_error(ctx, "out of memory while storing text layout");
+    if (!item) {
+        TTF_DestroyText(object);
         return -1;
     }
-    memcpy(stored_text, text, len);
 
     item->as.text.font = font;
-    item->as.text.glyphs = glyphs;
-    item->as.text.glyph_count = glyph_count;
-    item->as.text.text = stored_text;
+    item->as.text.object = object;
     item->as.text.text_length = len;
     item->as.text.order = ctx->layout->text_count++;
     item->as.text.x = x;
@@ -270,10 +257,9 @@ add_direct_text(struct build_context *ctx,
     item->as.text.baseline = baseline;
     item->as.text.width = width;
     item->as.text.line_height = line_height;
+    item->as.text.layout_x_scale = 1.0f;
     item->as.text.color = style.color;
     item->as.text.code_block = code_block;
-    item->as.text.strike = style.strike;
-    item->as.text.underline = style.underline;
     if (code_block) {
         code_block->content_width = fmaxf(
             code_block->content_width,
@@ -977,9 +963,33 @@ mdwn_layout_init(struct mdwn_layout *layout)
     mdwn_arena_init(&layout->arena, 64 * 1024);
 }
 
+static void
+destroy_text(struct mdwn_layout *layout, bool render_only)
+{
+    struct mdwn_draw_item *item;
+
+    for (item = layout->first; item; item = item->next) {
+        if (item->type != MDWN_DRAW_TEXT)
+            continue;
+        if (item->as.text.render_object) {
+            TTF_DestroyText(item->as.text.render_object);
+            item->as.text.render_object = NULL;
+        }
+        if (!render_only && item->as.text.object)
+            TTF_DestroyText(item->as.text.object);
+    }
+}
+
+void
+mdwn_layout_clear_render_text(struct mdwn_layout *layout)
+{
+    destroy_text(layout, true);
+}
+
 void
 mdwn_layout_destroy(struct mdwn_layout *layout)
 {
+    destroy_text(layout, false);
     mdwn_arena_destroy(&layout->arena);
     memset(layout, 0, sizeof(*layout));
 }
@@ -999,6 +1009,7 @@ mdwn_layout_build(struct mdwn_layout *layout,
     float y;
     const struct mdwn_draw_item *item;
 
+    destroy_text(layout, false);
     mdwn_arena_destroy(&layout->arena);
     mdwn_arena_init(&layout->arena, 64 * 1024);
     layout->first = NULL;

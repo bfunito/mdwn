@@ -3,10 +3,6 @@
 #include "theme.h"
 
 #include <fontconfig/fontconfig.h>
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include <hb-ft.h>
-#include <hb.h>
 
 #include <limits.h>
 #include <math.h>
@@ -23,14 +19,10 @@ struct font_source {
 struct mdwn_font {
     struct mdwn_font *next;
     struct mdwn_font_spec spec;
-    FT_Face face;
-    hb_font_t *hb_font;
-    float ascender;
-    float descender;
+    TTF_Font *handle;
 };
 
 struct mdwn_font_system {
-    FT_Library ft;
     struct font_source sources[2][3][2];
     struct mdwn_font *fonts;
     const struct mdwn_theme *theme;
@@ -51,6 +43,13 @@ set_error(char *err, size_t err_size, const char *message)
 {
     if (err && err_size)
         snprintf(err, err_size, "%s", message);
+}
+
+static void
+set_ttf_error(char *err, size_t err_size, const char *operation)
+{
+    if (err && err_size)
+        snprintf(err, err_size, "%s: %s", operation, SDL_GetError());
 }
 
 static char *
@@ -153,7 +152,6 @@ mdwn_font_system_create(struct mdwn_font_system **out,
                         char *err, size_t err_size)
 {
     struct mdwn_font_system *system;
-    FT_Error ft_error;
 
     *out = NULL;
 
@@ -161,25 +159,21 @@ mdwn_font_system_create(struct mdwn_font_system **out,
         set_error(err, err_size, "fontconfig initialization failed");
         return -1;
     }
+    if (!TTF_Init()) {
+        set_ttf_error(err, err_size, "SDL_ttf initialization failed");
+        FcFini();
+        return -1;
+    }
 
     system = calloc(1, sizeof(*system));
     if (!system) {
         set_error(err, err_size, "out of memory while initializing fonts");
+        TTF_Quit();
         FcFini();
         return -1;
     }
 
     system->theme = theme;
-
-    ft_error = FT_Init_FreeType(&system->ft);
-    if (ft_error) {
-        if (err && err_size)
-            snprintf(err, err_size, "FreeType initialization failed (%d)", ft_error);
-        free(system);
-        FcFini();
-        return -1;
-    }
-
     *out = system;
     return 0;
 }
@@ -196,8 +190,7 @@ mdwn_font_system_destroy(struct mdwn_font_system *system)
     font = system->fonts;
     while (font) {
         struct mdwn_font *next = font->next;
-        hb_font_destroy(font->hb_font);
-        FT_Done_Face(font->face);
+        TTF_CloseFont(font->handle);
         free(font);
         font = next;
     }
@@ -209,8 +202,8 @@ mdwn_font_system_destroy(struct mdwn_font_system *system)
         }
     }
 
-    FT_Done_FreeType(system->ft);
     free(system);
+    TTF_Quit();
     FcFini();
 }
 
@@ -220,7 +213,9 @@ same_spec(struct mdwn_font_spec a, struct mdwn_font_spec b)
     return a.family == b.family &&
            a.size_px == b.size_px &&
            a.weight == b.weight &&
-           a.italic == b.italic;
+           a.italic == b.italic &&
+           a.strike == b.strike &&
+           a.underline == b.underline;
 }
 
 struct mdwn_font *
@@ -229,7 +224,8 @@ mdwn_font_get(struct mdwn_font_system *system, struct mdwn_font_spec spec,
 {
     struct font_source *source;
     struct mdwn_font *font;
-    FT_Error ft_error;
+    SDL_PropertiesID props;
+    TTF_FontStyleFlags style = TTF_STYLE_NORMAL;
 
     for (font = system->fonts; font; font = font->next) {
         if (same_spec(font->spec, spec))
@@ -251,35 +247,38 @@ mdwn_font_get(struct mdwn_font_system *system, struct mdwn_font_spec spec,
         return NULL;
     }
 
-    ft_error = FT_New_Face(system->ft, source->path, source->face_index, &font->face);
-    if (ft_error) {
-        if (err && err_size)
-            snprintf(err, err_size, "could not open font '%s' (%d)", source->path, ft_error);
+    props = SDL_CreateProperties();
+    if (!props ||
+        !SDL_SetStringProperty(props, TTF_PROP_FONT_CREATE_FILENAME_STRING,
+                               source->path) ||
+        !SDL_SetFloatProperty(props, TTF_PROP_FONT_CREATE_SIZE_FLOAT,
+                              (float)spec.size_px) ||
+        !SDL_SetNumberProperty(props, TTF_PROP_FONT_CREATE_FACE_NUMBER,
+                               source->face_index)) {
+        set_ttf_error(err, err_size, "could not configure font");
+        if (props)
+            SDL_DestroyProperties(props);
         free(font);
         return NULL;
     }
 
-    ft_error = FT_Set_Pixel_Sizes(font->face, 0, spec.size_px);
-    if (ft_error) {
+    font->handle = TTF_OpenFontWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!font->handle) {
         if (err && err_size)
-            snprintf(err, err_size, "could not set font size %u (%d)", spec.size_px, ft_error);
-        FT_Done_Face(font->face);
+            snprintf(err, err_size, "could not open font '%s': %s",
+                     source->path, SDL_GetError());
         free(font);
         return NULL;
     }
 
-    font->hb_font = hb_ft_font_create_referenced(font->face);
-    if (!font->hb_font) {
-        set_error(err, err_size, "could not create HarfBuzz font");
-        FT_Done_Face(font->face);
-        free(font);
-        return NULL;
-    }
+    if (spec.strike)
+        style |= TTF_STYLE_STRIKETHROUGH;
+    if (spec.underline)
+        style |= TTF_STYLE_UNDERLINE;
+    TTF_SetFontStyle(font->handle, style);
 
     font->spec = spec;
-    font->ascender = (float)font->face->size->metrics.ascender / 64.0f;
-    font->descender = -(float)font->face->size->metrics.descender / 64.0f;
-
     font->next = system->fonts;
     system->fonts = font;
     return font;
@@ -303,141 +302,59 @@ mdwn_font_get_scaled(struct mdwn_font_system *system,
     return mdwn_font_get(system, spec, err, err_size);
 }
 
+TTF_Font *
+mdwn_font_handle(struct mdwn_font *font)
+{
+    return font->handle;
+}
+
 float
 mdwn_font_ascender(const struct mdwn_font *font)
 {
-    return font->ascender;
+    return (float)TTF_GetFontAscent(font->handle);
 }
 
 float
 mdwn_font_descender(const struct mdwn_font *font)
 {
-    return font->descender;
+    return -(float)TTF_GetFontDescent(font->handle);
 }
 
-static int
-shape_internal(struct mdwn_font *font,
-               const char *text, size_t len,
-               struct mdwn_arena *arena,
-               struct mdwn_shaped_glyph **glyphs_out,
-               size_t *count_out,
-               float *width_out,
-               char *err, size_t err_size)
+TTF_Text *
+mdwn_font_create_text(struct mdwn_font *font,
+                      const char *text, size_t len,
+                      float *width, size_t *cluster_count,
+                      char *err, size_t err_size)
 {
-    hb_buffer_t *buffer;
-    hb_glyph_info_t *infos;
-    hb_glyph_position_t *positions;
-    unsigned count;
-    float width = 0.0f;
-    size_t i;
-    struct mdwn_shaped_glyph *glyphs = NULL;
+    TTF_Text *object;
+    TTF_SubString **substrings;
+    int w;
+    int count;
 
     if (len > INT_MAX) {
-        set_error(err, err_size, "text run is too large to shape");
-        return -1;
+        set_error(err, err_size, "text run is too large to lay out");
+        return NULL;
     }
 
-    buffer = hb_buffer_create();
-    if (!buffer || !hb_buffer_allocation_successful(buffer)) {
-        if (buffer)
-            hb_buffer_destroy(buffer);
-        set_error(err, err_size, "out of memory while shaping text");
-        return -1;
+    object = TTF_CreateText(NULL, font->handle, text, len);
+    if (!object || !TTF_GetTextSize(object, &w, NULL)) {
+        set_ttf_error(err, err_size, "could not lay out text");
+        if (object)
+            TTF_DestroyText(object);
+        return NULL;
     }
 
-    hb_buffer_add_utf8(buffer, text, (int)len, 0, (int)len);
-    hb_buffer_guess_segment_properties(buffer);
-    hb_shape(font->hb_font, buffer, NULL, 0);
-
-    infos = hb_buffer_get_glyph_infos(buffer, &count);
-    positions = hb_buffer_get_glyph_positions(buffer, &count);
-
-    if (arena && count) {
-        glyphs = mdwn_arena_alloc(arena, (size_t)count * sizeof(*glyphs));
-        if (!glyphs) {
-            hb_buffer_destroy(buffer);
-            set_error(err, err_size, "out of memory while storing shaped text");
-            return -1;
+    *width = (float)w;
+    if (cluster_count) {
+        substrings = TTF_GetTextSubStringsForRange(object, 0, (int)len,
+                                                   &count);
+        if (!substrings) {
+            set_ttf_error(err, err_size, "could not inspect text layout");
+            TTF_DestroyText(object);
+            return NULL;
         }
+        SDL_free(substrings);
+        *cluster_count = (size_t)count;
     }
-
-    for (i = 0; i < count; ++i) {
-        float advance = (float)positions[i].x_advance / 64.0f;
-        width += advance;
-
-        if (glyphs) {
-            glyphs[i].index = infos[i].codepoint;
-            glyphs[i].cluster = infos[i].cluster;
-            glyphs[i].x_advance = advance;
-            glyphs[i].y_advance = (float)positions[i].y_advance / 64.0f;
-            glyphs[i].x_offset = (float)positions[i].x_offset / 64.0f;
-            glyphs[i].y_offset = (float)positions[i].y_offset / 64.0f;
-        }
-    }
-
-    hb_buffer_destroy(buffer);
-
-    if (glyphs_out)
-        *glyphs_out = glyphs;
-    if (count_out)
-        *count_out = count;
-    if (width_out)
-        *width_out = width;
-    return 0;
-}
-
-int
-mdwn_font_shape(struct mdwn_font *font,
-                const char *text, size_t len,
-                struct mdwn_arena *arena,
-                struct mdwn_shaped_glyph **glyphs,
-                size_t *glyph_count,
-                float *width,
-                char *err, size_t err_size)
-{
-    return shape_internal(font, text, len, arena, glyphs, glyph_count,
-                          width, err, err_size);
-}
-
-int
-mdwn_font_render_glyph(struct mdwn_font *font, uint32_t glyph_index,
-                       struct mdwn_glyph_bitmap *bitmap,
-                       char *err, size_t err_size)
-{
-    FT_Error ft_error;
-    FT_GlyphSlot slot;
-
-    ft_error = FT_Load_Glyph(font->face, glyph_index, FT_LOAD_DEFAULT);
-    if (ft_error) {
-        if (err && err_size)
-            snprintf(err, err_size, "FreeType could not load glyph %u (%d)", glyph_index, ft_error);
-        return -1;
-    }
-
-    slot = font->face->glyph;
-    if (slot->format != FT_GLYPH_FORMAT_BITMAP) {
-        ft_error = FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL);
-        if (ft_error) {
-            if (err && err_size)
-                snprintf(err, err_size, "FreeType could not render glyph %u (%d)", glyph_index, ft_error);
-            return -1;
-        }
-    }
-
-    bitmap->buffer = slot->bitmap.buffer;
-    bitmap->width = (int)slot->bitmap.width;
-    bitmap->height = (int)slot->bitmap.rows;
-    bitmap->pitch = slot->bitmap.pitch;
-    bitmap->left = slot->bitmap_left;
-    bitmap->top = slot->bitmap_top;
-    bitmap->num_grays = slot->bitmap.num_grays;
-    if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY)
-        bitmap->format = MDWN_BITMAP_GRAY;
-    else if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_MONO)
-        bitmap->format = MDWN_BITMAP_MONO;
-    else {
-        set_error(err, err_size, "unsupported FreeType bitmap format");
-        return -1;
-    }
-    return 0;
+    return object;
 }

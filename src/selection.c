@@ -3,6 +3,7 @@
 #include "layout.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -61,42 +62,43 @@ mdwn_selection_item_range(const struct mdwn_selection *selection,
     return *start_offset < *end_offset;
 }
 
-float
-mdwn_selection_text_x_at(const struct mdwn_draw_item *item, size_t offset)
+static bool
+substring_at_x(const struct mdwn_draw_item *item, float x,
+               TTF_SubString *substring, int *local_x)
 {
-    float x = mdwn_layout_text_x(item);
-    size_t i;
+    int point = (int)roundf(
+        (x - mdwn_layout_text_x(item)) / item->as.text.layout_x_scale);
 
-    for (i = 0; i < item->as.text.glyph_count; ++i) {
-        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
-
-        if (offset <= glyph->cluster)
-            break;
-        x += glyph->x_advance;
-    }
-    return x;
+    if (local_x)
+        *local_x = point;
+    return TTF_GetTextSubStringForPoint(item->as.text.object,
+                                        point, 0, substring);
 }
 
 static size_t
-text_offset_at(const struct mdwn_draw_item *item, float x)
+cursor_offset_at(const struct mdwn_draw_item *item, float x)
 {
-    float pen = mdwn_layout_text_x(item);
-    size_t i;
+    TTF_SubString substring;
+    int local_x;
+    size_t offset;
+    bool before;
 
-    if (x <= pen)
+    if (!substring_at_x(item, x, &substring, &local_x))
         return 0;
+    if (substring.flags &
+        (TTF_SUBSTRING_LINE_END | TTF_SUBSTRING_TEXT_END))
+        return (size_t)substring.offset;
 
-    for (i = 0; i < item->as.text.glyph_count; ++i) {
-        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
-        float next = pen + glyph->x_advance;
+    before = local_x < substring.rect.x + substring.rect.w / 2;
+    if ((substring.flags & TTF_SUBSTRING_DIRECTION_MASK) == TTF_DIRECTION_RTL)
+        before = !before;
 
-        if (x < (pen + next) * 0.5f)
-            return glyph->cluster < item->as.text.text_length
-                ? glyph->cluster
-                : item->as.text.text_length;
-        pen = next;
-    }
-    return item->as.text.text_length;
+    offset = (size_t)substring.offset;
+    if (!before)
+        offset += (size_t)substring.length;
+    return offset < item->as.text.text_length
+        ? offset
+        : item->as.text.text_length;
 }
 
 static bool
@@ -145,7 +147,7 @@ find_text_position(const struct mdwn_layout *layout, float x, float y,
         return false;
 
     position->item = best;
-    position->offset = text_offset_at(best, x);
+    position->offset = cursor_offset_at(best, x);
     return true;
 }
 
@@ -198,28 +200,26 @@ is_word_character(const char *text, size_t length, size_t offset)
 static size_t
 character_at_x(const struct mdwn_draw_item *item, float x)
 {
-    float pen = mdwn_layout_text_x(item);
-    size_t offset = 0;
-    size_t i;
+    TTF_SubString substring;
+    size_t offset;
 
-    for (i = 0; i < item->as.text.glyph_count; ++i) {
-        const struct mdwn_shaped_glyph *glyph = &item->as.text.glyphs[i];
-        float next = pen + glyph->x_advance;
-
-        offset = glyph->cluster;
-        if (x < next)
-            break;
-        pen = next;
+    if (!substring_at_x(item, x, &substring, NULL))
+        return 0;
+    offset = (size_t)substring.offset;
+    if (offset >= item->as.text.text_length && offset > 0) {
+        if (!TTF_GetTextSubString(item->as.text.object, (int)offset - 1,
+                                  &substring))
+            return 0;
+        offset = (size_t)substring.offset;
     }
-
-    return offset < item->as.text.text_length ? offset : 0;
+    return offset;
 }
 
 static bool
 word_range(const struct mdwn_draw_item *item, float x,
            struct mdwn_text_position *start, struct mdwn_text_position *end)
 {
-    const char *text = item->as.text.text;
+    const char *text = item->as.text.object->text;
     size_t length = item->as.text.text_length;
     size_t offset = character_at_x(item, x);
     size_t start_offset, end_offset;
@@ -440,10 +440,44 @@ mdwn_selection_text(const struct mdwn_selection *selection,
             continue;
         if (previous && !same_text_line(previous, item))
             *dst++ = '\n';
-        memcpy(dst, item->as.text.text + start, end - start);
+        memcpy(dst, item->as.text.object->text + start, end - start);
         dst += end - start;
         previous = item;
     }
     *dst = '\0';
     return text;
+}
+
+bool
+mdwn_selection_text_bounds(const struct mdwn_draw_item *item,
+                           size_t offset, size_t length,
+                           float *x, float *width)
+{
+    TTF_SubString **substrings;
+    int i;
+    int left = INT_MAX;
+    int right = INT_MIN;
+
+    if (offset > INT_MAX || length > (size_t)INT_MAX - offset)
+        return false;
+
+    substrings = TTF_GetTextSubStringsForRange(
+        item->as.text.object, (int)offset, (int)length, NULL);
+    if (!substrings)
+        return false;
+
+    for (i = 0; substrings[i]; ++i) {
+        if (substrings[i]->rect.x < left)
+            left = substrings[i]->rect.x;
+        if (substrings[i]->rect.x + substrings[i]->rect.w > right)
+            right = substrings[i]->rect.x + substrings[i]->rect.w;
+    }
+    SDL_free(substrings);
+
+    if (left == INT_MAX)
+        return false;
+    *x = mdwn_layout_text_x(item)
+        + (float)left * item->as.text.layout_x_scale;
+    *width = (float)(right - left) * item->as.text.layout_x_scale;
+    return true;
 }

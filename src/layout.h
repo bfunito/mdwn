@@ -32,9 +32,8 @@ struct mdwn_draw_item {
     union {
         struct {
             struct mdwn_font *font;
-            struct mdwn_shaped_glyph *glyphs;
-            size_t glyph_count;
-            const char *text;
+            TTF_Text *object;
+            TTF_Text *render_object;
             const char *href;
             size_t text_length;
             size_t order;
@@ -43,10 +42,11 @@ struct mdwn_draw_item {
             float baseline;
             float width;
             float line_height;
+            float layout_x_scale;
+            float raster_scale;
+            float raster_x_scale;
             struct mdwn_color color;
             struct mdwn_code_block *code_block;
-            bool strike;
-            bool underline;
         } text;
 
         struct {
@@ -79,6 +79,7 @@ float mdwn_layout_text_x(const struct mdwn_draw_item *item);
 
 void mdwn_layout_init(struct mdwn_layout *layout);
 void mdwn_layout_destroy(struct mdwn_layout *layout);
+void mdwn_layout_clear_render_text(struct mdwn_layout *layout);
 int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_document *doc,
                       struct mdwn_font_system *fonts,

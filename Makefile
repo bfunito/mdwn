@@ -6,7 +6,7 @@ PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 
-PKGS     = sdl3 md4c freetype2 harfbuzz fontconfig source-highlight
+PKGS     = sdl3 sdl3-ttf md4c fontconfig source-highlight
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L $(shell pkg-config --cflags $(PKGS))
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Wshadow
