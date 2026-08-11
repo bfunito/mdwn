@@ -1,8 +1,9 @@
 #include "document.h"
-#include "file.h"
 #include "flavor.h"
 #include "markdown.h"
 #include "render.h"
+
+#include <SDL3/SDL.h>
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -170,9 +171,10 @@ int
 main(int argc, char **argv)
 {
     struct options options;
-    struct mdwn_file file;
     struct mdwn_document document;
     const struct mdwn_theme *theme;
+    char *file;
+    size_t file_size;
     char error[512] = {0};
     char *title = NULL;
     int status = 1;
@@ -185,18 +187,19 @@ main(int argc, char **argv)
     theme = options.dark_theme ? options.flavor->dark_theme
                                : options.flavor->theme;
 
-    if (mdwn_file_load(&file, options.path, error, sizeof(error)) < 0) {
-        fprintf(stderr, "mdwn: %s\n", error);
+    file = SDL_LoadFile(options.path, &file_size);
+    if (!file) {
+        fprintf(stderr, "mdwn: %s\n", SDL_GetError());
         return 1;
     }
 
     if (mdwn_document_init(&document) < 0) {
         fprintf(stderr, "mdwn: out of memory while creating document\n");
-        mdwn_file_unload(&file);
+        SDL_free(file);
         return 1;
     }
 
-    if (mdwn_markdown_parse(&document, file.data, file.size,
+    if (mdwn_markdown_parse(&document, file, file_size,
                             options.flavor, error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "could not parse markdown");
         goto out;
@@ -219,6 +222,6 @@ main(int argc, char **argv)
 out:
     free(title);
     mdwn_document_destroy(&document);
-    mdwn_file_unload(&file);
+    SDL_free(file);
     return status;
 }

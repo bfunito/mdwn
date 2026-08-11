@@ -18,7 +18,6 @@ LDLIBS   = $(shell pkg-config --libs $(PKGS)) -lm
 SRC = \
 	src/main.c \
 	src/arena.c \
-	src/file.c \
 	src/theme.c \
 	src/flavor.c \
 	src/document.c \
