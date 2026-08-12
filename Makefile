@@ -6,6 +6,11 @@ PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 
+BUILDDIR     = build
+OBJDIR       = $(BUILDDIR)/obj
+BUILD_BINDIR = $(BUILDDIR)/bin
+PROGRAM      = $(BUILD_BINDIR)/mdwn
+
 BASE_VERSION = $(shell sed -n '1p' VERSION)
 GIT_TAG      = $(shell git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null)
 GIT_REV      = $(shell git rev-parse --short HEAD 2>/dev/null)
@@ -41,13 +46,17 @@ SRC = \
 	src/selection.c \
 	src/render.c
 CXXSRC = src/highlight.cc
-OBJ = $(SRC:.c=.o) $(CXXSRC:.cc=.o)
+OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC)) \
+	$(patsubst src/%.cc,$(OBJDIR)/%.o,$(CXXSRC))
 VERSION_HEADER = src/version.h
 MANPAGE = mdwn.1
 
-all: mdwn $(MANPAGE)
+all: $(PROGRAM) $(MANPAGE)
 
-mdwn: $(OBJ)
+mdwn: $(PROGRAM)
+
+$(PROGRAM): $(OBJ)
+	mkdir -p '$(BUILD_BINDIR)'
 	$(CXX) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
 
 $(VERSION_HEADER): FORCE VERSION
@@ -62,7 +71,7 @@ $(VERSION_HEADER): FORCE VERSION
 		rm -f '$@.tmp'; \
 	fi
 
-src/main.o: $(VERSION_HEADER)
+$(OBJDIR)/main.o: $(VERSION_HEADER)
 
 $(MANPAGE): mdwn.1.in FORCE VERSION
 	@sed 's/@VERSION@/$(VERSION)/g' mdwn.1.in > '$@.tmp'
@@ -72,10 +81,12 @@ $(MANPAGE): mdwn.1.in FORCE VERSION
 		rm -f '$@.tmp'; \
 	fi
 
-.c.o:
+$(OBJDIR)/%.o: src/%.c
+	mkdir -p '$(OBJDIR)'
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-.cc.o:
+$(OBJDIR)/%.o: src/%.cc
+	mkdir -p '$(OBJDIR)'
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 sanitize:
@@ -83,17 +94,18 @@ sanitize:
 	$(MAKE) CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -Wshadow -fsanitize=address,undefined' \
 		LDFLAGS='-fsanitize=address,undefined' mdwn
 
-install: mdwn $(MANPAGE)
+install: $(PROGRAM) $(MANPAGE)
 	mkdir -p '$(DESTDIR)$(BINDIR)' '$(DESTDIR)$(MANDIR)/man1'
-	install -m 0755 mdwn '$(DESTDIR)$(BINDIR)/mdwn'
+	install -m 0755 '$(PROGRAM)' '$(DESTDIR)$(BINDIR)/mdwn'
 	install -m 0644 mdwn.1 '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
 
 uninstall:
 	rm -f '$(DESTDIR)$(BINDIR)/mdwn' '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
 
 clean:
-	rm -f mdwn $(OBJ) $(VERSION_HEADER) $(MANPAGE)
+	rm -f $(PROGRAM) $(OBJ) $(VERSION_HEADER) $(MANPAGE)
+	rmdir '$(OBJDIR)' '$(BUILD_BINDIR)' '$(BUILDDIR)' 2>/dev/null || :
 
 FORCE:
 
-.PHONY: all sanitize install uninstall clean FORCE
+.PHONY: all mdwn sanitize install uninstall clean FORCE
