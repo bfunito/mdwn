@@ -2,6 +2,7 @@
 #include "flavor.h"
 #include "markdown.h"
 #include "render.h"
+#include "version.h"
 
 #include <SDL3/SDL.h>
 
@@ -9,8 +10,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define MDWN_VERSION "0.1.0-dev"
 
 struct options {
     const char *path;

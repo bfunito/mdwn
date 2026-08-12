@@ -1,3 +1,5 @@
 /mdwn
+/mdwn.1
 /src/*.o
+/src/version.h
 /test/markdown-test

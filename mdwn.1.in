@@ -1,4 +1,4 @@
-.TH MDWN 1 "August 2026" "mdwn 0.1.0-dev" "User Commands"
+.TH MDWN 1 "August 2026" "mdwn @VERSION@" "User Commands"
 .SH NAME
 mdwn \- view Markdown documents
 .SH SYNOPSIS
