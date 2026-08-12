@@ -1,5 +1,3 @@
-.POSIX:
-
 CC      ?= cc
 CXX     ?= c++
 PREFIX  ?= /usr/local
