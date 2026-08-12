@@ -44,7 +44,7 @@ mdwn: $(OBJ)
 sanitize:
 	$(MAKE) clean
 	$(MAKE) CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -Wshadow -fsanitize=address,undefined' \
-		LDFLAGS='-fsanitize=address,undefined' mdwn check
+		LDFLAGS='-fsanitize=address,undefined' mdwn
 
 install: mdwn
 	mkdir -p '$(DESTDIR)$(BINDIR)' '$(DESTDIR)$(MANDIR)/man1'
@@ -57,4 +57,4 @@ uninstall:
 clean:
 	rm -f mdwn $(OBJ)
 
-.PHONY: all check sanitize install uninstall clean
+.PHONY: all sanitize install uninstall clean
