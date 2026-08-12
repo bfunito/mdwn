@@ -92,10 +92,14 @@ sanitize:
 	$(MAKE) CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -Wshadow -fsanitize=address,undefined' \
 		LDFLAGS='-fsanitize=address,undefined' mdwn
 
-install: $(PROGRAM) $(MANPAGE)
+install:
+	@if ! $(MAKE) --no-print-directory -q -o FORCE all; then \
+		printf '%s\n' 'Build is missing or outdated; run make before make install.' >&2; \
+		exit 1; \
+	fi
 	mkdir -p '$(DESTDIR)$(BINDIR)' '$(DESTDIR)$(MANDIR)/man1'
 	install -m 0755 '$(PROGRAM)' '$(DESTDIR)$(BINDIR)/mdwn'
-	install -m 0644 mdwn.1 '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
+	install -m 0644 '$(MANPAGE)' '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
 
 uninstall:
 	rm -f '$(DESTDIR)$(BINDIR)/mdwn' '$(DESTDIR)$(MANDIR)/man1/mdwn.1'
