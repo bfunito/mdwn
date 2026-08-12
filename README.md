@@ -52,7 +52,7 @@ Clone the repository, build `mdwn`, and install it under `/usr/local`:
 ```sh
 git clone https://github.com/bfunito/mdwn.git
 cd mdwn
-make CC=gcc
+make
 sudo make install
 ```
 
@@ -61,11 +61,19 @@ This installs the executable as `/usr/local/bin/mdwn` and the manual page under 
 To install only for the current user instead:
 
 ```sh
-make CC=gcc
+make
 make PREFIX="$HOME/.local" install
 ```
 
 Make sure `$HOME/.local/bin` is included in your `PATH`.
+
+The Makefile uses the system's default C and C++ compilers. To select other
+compilers explicitly, set `CC` and `CXX`, for example:
+
+```sh
+make CC=gcc CXX=g++
+make CC=clang CXX=clang++
+```
 
 To uninstall, use the same prefix used during installation:
 
