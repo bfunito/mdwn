@@ -255,19 +255,20 @@ set_draw_color(SDL_Renderer *renderer, struct mdwn_color color)
 }
 
 static int
-set_code_clip(struct viewer *viewer, const struct mdwn_code_block *block)
+set_code_clip(struct viewer *viewer, const struct mdwn_code_block *block,
+              float x_scale, float y_scale)
 {
     SDL_Rect rect;
     const SDL_Rect *clip = NULL;
 
     if (block) {
-        float left = block->clip_x - viewer->scroll_x;
-        float top = block->y - viewer->scroll_y;
+        float left = (block->clip_x - viewer->scroll_x) * x_scale;
+        float top = (block->y - viewer->scroll_y) * y_scale;
 
         rect.x = (int)floorf(left);
         rect.y = (int)floorf(top);
-        rect.w = (int)ceilf(left + block->clip_w) - rect.x;
-        rect.h = (int)ceilf(top + block->h) - rect.y;
+        rect.w = (int)ceilf(left + block->clip_w * x_scale) - rect.x;
+        rect.h = (int)ceilf(top + block->h * y_scale) - rect.y;
         clip = &rect;
     }
     if (!SDL_SetRenderClipRect(viewer->renderer, clip)) {
@@ -355,6 +356,10 @@ draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
         set_sdl_error(viewer, "could not set text scale");
         return -1;
     }
+    if (item->as.text.code_block &&
+        set_code_clip(viewer, item->as.text.code_block,
+                      scale / x_scale, scale) < 0)
+        return -1;
 
     x = (mdwn_layout_text_x(item) - viewer->scroll_x) * scale / x_scale;
     y = (item->as.text.baseline - viewer->scroll_y) * scale
@@ -368,6 +373,9 @@ draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
         set_sdl_error(viewer, "could not restore document scale");
         return -1;
     }
+    if (item->as.text.code_block &&
+        set_code_clip(viewer, item->as.text.code_block, 1.0f, 1.0f) < 0)
+        return -1;
     return 0;
 }
 
@@ -488,7 +496,7 @@ render_frame(struct viewer *viewer)
             : NULL;
 
         if (next_clip != clip) {
-            if (set_code_clip(viewer, next_clip) < 0)
+            if (set_code_clip(viewer, next_clip, 1.0f, 1.0f) < 0)
                 return -1;
             clip = next_clip;
         }
@@ -540,7 +548,7 @@ render_frame(struct viewer *viewer)
         }
     }
 
-    if (clip && set_code_clip(viewer, NULL) < 0)
+    if (clip && set_code_clip(viewer, NULL, 1.0f, 1.0f) < 0)
         return -1;
 
     if (draw_code_scrollbars(viewer) < 0)
