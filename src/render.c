@@ -323,6 +323,7 @@ draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
     const struct mdwn_color color = item->as.text.color;
     float scale = item->as.text.raster_scale;
     float x_scale = item->as.text.raster_x_scale;
+    float render_x_scale, render_y_scale;
     float x, y;
 
     if (!item->as.text.render_object) {
@@ -350,9 +351,10 @@ draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
         item->as.text.raster_x_scale = x_scale;
     }
 
+    render_x_scale = viewer->zoom * x_scale / scale;
+    render_y_scale = viewer->zoom / scale;
     if (!SDL_SetRenderScale(viewer->renderer,
-                            viewer->zoom * x_scale / scale,
-                            viewer->zoom / scale)) {
+                            render_x_scale, render_y_scale)) {
         set_sdl_error(viewer, "could not set text scale");
         return -1;
     }
@@ -365,6 +367,8 @@ draw_text(struct viewer *viewer, struct mdwn_draw_item *item)
     y = (item->as.text.baseline - viewer->scroll_y) * scale
         - (float)TTF_GetFontAscent(
             TTF_GetTextFont(item->as.text.render_object));
+    x = roundf(x * render_x_scale) / render_x_scale;
+    y = roundf(y * render_y_scale) / render_y_scale;
     if (!TTF_DrawRendererText(item->as.text.render_object, x, y)) {
         set_sdl_error(viewer, "could not render text");
         return -1;
