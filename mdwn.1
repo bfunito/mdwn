@@ -1,0 +1,122 @@
+.TH MDWN 1 "August 2026" "mdwn 0.1.0-dev" "User Commands"
+.SH NAME
+mdwn \- view Markdown documents
+.SH SYNOPSIS
+.B mdwn
+.RI [ options ]
+.I file
+.SH DESCRIPTION
+.B mdwn
+is a graphical Markdown viewer.
+It parses a Markdown file and displays the rendered document in an SDL window.
+.SH OPTIONS
+.TP
+.BR \-f " " name ", " \-\-flavor " " name
+Select the Markdown flavor.
+Supported values are
+.BR github ,
+.BR gitlab ,
+and
+.BR codeberg .
+The default is
+.BR github .
+.TP
+.BR \-\-flavor= name
+Equivalent to
+.BR \-\-flavor " " name .
+.TP
+.BR \-t " " name ", " \-\-theme " " name
+Select the visual theme.
+Supported values are
+.B light
+and
+.BR dark .
+The default is
+.BR light .
+.TP
+.BR \-\-theme= name
+Equivalent to
+.BR \-\-theme " " name .
+.TP
+.BR \-h ", " \-\-help
+Print a summary of command-line options and exit.
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit.
+.TP
+.B \-\-
+End option processing.
+This is useful when the input filename begins with a hyphen.
+.SH INTERACTION
+.SS Keyboard
+.TP
+.B Down, j
+Scroll down.
+.TP
+.B Up, k
+Scroll up.
+.TP
+.B Page Down
+Scroll down by approximately one page.
+.TP
+.B Page Up
+Scroll up by approximately one page.
+.TP
+.B Home
+Scroll to the beginning of the document.
+.TP
+.B End
+Scroll to the end of the document.
+.TP
+.B Ctrl+A
+Select all text.
+.TP
+.B Ctrl+C
+Copy the selected text to the clipboard.
+.TP
+.B Escape, q
+Close the viewer.
+.SS Mouse and touchpad
+.TP
+.B Wheel or two-finger scroll
+Scroll the document vertically or horizontally.
+Hold Shift to convert vertical scrolling to horizontal scrolling.
+.TP
+.B Ctrl+wheel
+Zoom in or out around the pointer.
+.TP
+.B Pinch
+Zoom in or out.
+.TP
+.B Left-button drag
+Select text.
+.TP
+.B Left click on a link
+Open the link with the system's default handler.
+.SH ENVIRONMENT
+.TP
+.B SOURCE_HIGHLIGHT_DATADIR
+Override the directory containing GNU Source Highlight language definitions
+and language maps.
+.SH EXIT STATUS
+.TP
+.B 0
+The document was displayed successfully, or help or version information was
+requested.
+.TP
+.B 1
+The input file could not be loaded or parsed, or the viewer encountered a
+runtime error.
+.TP
+.B 2
+The command line was invalid.
+.SH LIMITATIONS
+Raw HTML is displayed literally.
+.SH SEE ALSO
+.BR source-highlight (1)
+.SH LICENSE
+.B mdwn
+is distributed under the GNU General Public License, version 3.
+See the
+.I LICENSE
+file supplied with the source code for the complete license text.
