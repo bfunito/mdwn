@@ -22,12 +22,12 @@ else
 VERSION = $(BASE_VERSION)-dev
 endif
 
-PKGS     = sdl3 sdl3-ttf md4c fontconfig source-highlight
+PKGS     = sdl3 sdl3-ttf md4c fontconfig source-highlight tomlplusplus
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L $(shell pkg-config --cflags $(PKGS))
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Wshadow
 CXXFLAGS ?= -O2 -g
-CXXFLAGS += -std=c++11 -Wall -Wextra -Wpedantic -Wshadow
+CXXFLAGS += -std=c++17 -Wall -Wextra -Wpedantic -Wshadow
 LDFLAGS ?=
 LDLIBS   = $(shell pkg-config --libs $(PKGS)) -lm
 
@@ -43,7 +43,7 @@ SRC = \
 	src/layout.c \
 	src/selection.c \
 	src/render.c
-CXXSRC = src/highlight.cc
+CXXSRC = src/highlight.cc src/config.cc
 OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC)) \
 	$(patsubst src/%.cc,$(OBJDIR)/%.o,$(CXXSRC))
 VERSION_HEADER = src/version.h

@@ -38,6 +38,9 @@ The default is
 Equivalent to
 .BR \-\-theme " " name .
 .TP
+.B \-\-no-config
+Ignore system, user, and local configuration files.
+.TP
 .BR \-h ", " \-\-help
 Print a summary of command-line options and exit.
 .TP
@@ -47,6 +50,65 @@ Print version information and exit.
 .B \-\-
 End option processing.
 This is useful when the input filename begins with a hyphen.
+.SH CONFIGURATION
+.B mdwn
+reads TOML configuration from the system, user, and local configuration
+files described below.
+Later sources override earlier sources, and command-line options have the
+highest priority.
+Missing configuration files are ignored.
+.PP
+The following top-level settings are supported:
+.TP
+.B flavor
+The Markdown flavor:
+.BR github ,
+.BR gitlab ,
+or
+.BR codeberg .
+.TP
+.B theme
+The visual theme:
+.B light
+or
+.BR dark .
+.PP
+Viewer settings are placed in a
+.B [viewer]
+table:
+.TP
+.B initial_zoom
+Initial zoom level, between 0.1 and 10.0.
+The default is 1.0.
+.TP
+.B min_zoom
+Minimum zoom level, between 0.1 and 10.0.
+The default is 1.0.
+.TP
+.B max_zoom
+Maximum zoom level, between 0.1 and 10.0.
+The default is 5.0.
+.TP
+.B wheel_zoom_speed
+Multiplier for Ctrl+wheel zoom speed, between 0.01 and 100.0.
+The default is 1.0.
+.TP
+.B scroll_step
+Wheel and keyboard scrolling distance, between 1.0 and 10000.0.
+The default is 48.0.
+.PP
+.SS Example
+.EX
+flavor = "github"
+theme = "dark"
+
+[viewer]
+initial_zoom = 1.0
+min_zoom = 1.0
+max_zoom = 5.0
+wheel_zoom_speed = 1.0
+scroll_step = 48.0
+.EE
 .SH INTERACTION
 .SS Keyboard
 .TP
@@ -95,6 +157,16 @@ Select text.
 Open the link with the system's default handler.
 .SH ENVIRONMENT
 .TP
+.B XDG_CONFIG_HOME
+Base directory for the user configuration file.
+The default is
+.IR $HOME/.config .
+.TP
+.B XDG_CONFIG_DIRS
+Colon-separated, preference-ordered system configuration directories.
+The default is
+.IR /etc/xdg .
+.TP
 .B SOURCE_HIGHLIGHT_DATADIR
 Override the directory containing GNU Source Highlight language definitions
 and language maps.
@@ -105,11 +177,25 @@ The document was displayed successfully, or help or version information was
 requested.
 .TP
 .B 1
-The input file could not be loaded or parsed, or the viewer encountered a
-runtime error.
+Configuration was invalid, the input file could not be loaded or parsed, or
+the viewer encountered a runtime error.
 .TP
 .B 2
 The command line was invalid.
+.SH FILES
+.TP
+.I /etc/xdg/mdwn/config.toml
+Default system-wide configuration file.
+.TP
+.I $XDG_CONFIG_HOME/mdwn/config.toml
+User configuration file.
+.TP
+.I .mdwn/config.toml
+Local configuration file.
+Starting with the input file's directory,
+.B mdwn
+searches its ancestors and uses the nearest file without crossing a
+filesystem boundary.
 .SH LIMITATIONS
 Raw HTML is displayed literally.
 .TP

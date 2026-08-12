@@ -1,5 +1,6 @@
 #include "render.h"
 
+#include "config.h"
 #include "document.h"
 #include "font.h"
 #include "layout.h"
@@ -15,9 +16,6 @@
 
 #define INITIAL_WIDTH 960
 #define INITIAL_HEIGHT 720
-#define SCROLL_STEP 48.0f
-#define MIN_ZOOM 1.0f
-#define MAX_ZOOM 5.0f
 #define WHEEL_ZOOM_STEP 1.1f
 #define WHEEL_ZOOM_SENSITIVITY 0.05f
 #define RASTER_ZOOM_STEP 0.25f
@@ -33,6 +31,7 @@ struct viewer {
     struct mdwn_selection selection;
     const struct mdwn_document *doc;
     const struct mdwn_theme *theme;
+    const struct mdwn_viewer_config *config;
     float zoom;
     float raster_zoom;
     float pinch_scale;
@@ -651,7 +650,8 @@ static void
 zoom_at(struct viewer *viewer, float factor, float x, float y)
 {
     float old_zoom = viewer->zoom;
-    float zoom = fminf(fmaxf(old_zoom * factor, MIN_ZOOM), MAX_ZOOM);
+    float zoom = fminf(fmaxf(old_zoom * factor, viewer->config->min_zoom),
+                       viewer->config->max_zoom);
     float raster_zoom;
     float anchor_x;
     float anchor_y;
@@ -703,7 +703,8 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         }
         if (modifiers & SDL_KMOD_CTRL) {
             zoom_at(viewer, powf(WHEEL_ZOOM_STEP,
-                                 dy * WHEEL_ZOOM_SENSITIVITY),
+                                 dy * WHEEL_ZOOM_SENSITIVITY
+                                    * viewer->config->wheel_zoom_speed),
                     event->wheel.mouse_x, event->wheel.mouse_y);
         } else {
             struct mdwn_code_block *block;
@@ -717,10 +718,12 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
                 document_x(viewer, event->wheel.mouse_x),
                 document_y(viewer, event->wheel.mouse_y));
             if (block && dx != 0.0f) {
-                scroll_code_block(viewer, block, dx * SCROLL_STEP);
+                scroll_code_block(viewer, block,
+                                  dx * viewer->config->scroll_step);
                 dx = 0.0f;
             }
-            scroll_by(viewer, dx * SCROLL_STEP, -dy * SCROLL_STEP);
+            scroll_by(viewer, dx * viewer->config->scroll_step,
+                      -dy * viewer->config->scroll_step);
         }
         break;
     }
@@ -841,11 +844,11 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
             break;
         case SDLK_DOWN:
         case SDLK_J:
-            scroll_by(viewer, 0.0f, SCROLL_STEP);
+            scroll_by(viewer, 0.0f, viewer->config->scroll_step);
             break;
         case SDLK_UP:
         case SDLK_K:
-            scroll_by(viewer, 0.0f, -SCROLL_STEP);
+            scroll_by(viewer, 0.0f, -viewer->config->scroll_step);
             break;
         case SDLK_PAGEDOWN:
             scroll_by(viewer, 0.0f, (float)viewer->height * 0.85f);
@@ -900,6 +903,7 @@ viewer_cleanup(struct viewer *viewer)
 int
 mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
                 const struct mdwn_theme *theme,
+                const struct mdwn_viewer_config *config,
                 char *err, size_t err_size)
 {
     struct viewer viewer;
@@ -910,8 +914,10 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
     memset(&viewer, 0, sizeof(viewer));
     viewer.doc = doc;
     viewer.theme = theme;
-    viewer.zoom = 1.0f;
-    viewer.raster_zoom = 1.0f;
+    viewer.config = config;
+    viewer.zoom = config->initial_zoom;
+    viewer.raster_zoom = roundf(config->initial_zoom / RASTER_ZOOM_STEP)
+                       * RASTER_ZOOM_STEP;
     viewer.pinch_scale = 1.0f;
     viewer.err = err;
     viewer.err_size = err_size;

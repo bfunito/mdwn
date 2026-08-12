@@ -10,7 +10,15 @@ struct mdwn_flavor {
     const struct mdwn_theme *dark_theme;
 };
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 const struct mdwn_flavor *mdwn_flavor_default(void);
 const struct mdwn_flavor *mdwn_flavor_find(const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

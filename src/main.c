@@ -1,3 +1,4 @@
+#include "config.h"
 #include "document.h"
 #include "flavor.h"
 #include "markdown.h"
@@ -13,8 +14,9 @@
 
 struct options {
     const char *path;
-    const struct mdwn_flavor *flavor;
-    bool dark_theme;
+    const char *flavor;
+    const char *theme;
+    bool no_config;
 };
 
 static void
@@ -26,24 +28,15 @@ usage(FILE *stream)
         "Options:\n"
         "  -f, --flavor NAME  markdown flavor (github, gitlab, or codeberg)\n"
         "  -t, --theme NAME   visual theme (light or dark; default: light)\n"
+        "      --no-config    ignore system, user, and local configuration\n"
         "  -h, --help         show this help\n"
         "  -V, --version      show version\n");
 }
 
 static int
-set_theme(struct options *options, const char *name)
+valid_theme(const char *name)
 {
-    if (strcmp(name, "light") == 0) {
-        options->dark_theme = false;
-        return 0;
-    }
-    if (strcmp(name, "dark") == 0) {
-        options->dark_theme = true;
-        return 0;
-    }
-
-    fprintf(stderr, "mdwn: unsupported theme '%s'\n", name);
-    return -1;
+    return strcmp(name, "light") == 0 || strcmp(name, "dark") == 0;
 }
 
 static int
@@ -52,7 +45,6 @@ parse_options(struct options *options, int argc, char **argv)
     int i;
 
     memset(options, 0, sizeof(*options));
-    options->flavor = mdwn_flavor_default();
 
     for (i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -85,25 +77,30 @@ parse_options(struct options *options, int argc, char **argv)
             exit(0);
         }
 
+        if (strcmp(arg, "--no-config") == 0) {
+            options->no_config = true;
+            continue;
+        }
+
         if (strcmp(arg, "-f") == 0 || strcmp(arg, "--flavor") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "mdwn: %s requires an argument\n", arg);
                 return -1;
             }
-            options->flavor = mdwn_flavor_find(argv[i]);
-            if (!options->flavor) {
+            if (!mdwn_flavor_find(argv[i])) {
                 fprintf(stderr, "mdwn: unsupported flavor '%s'\n", argv[i]);
                 return -1;
             }
+            options->flavor = argv[i];
             continue;
         }
 
         if (strncmp(arg, "--flavor=", 9) == 0) {
-            options->flavor = mdwn_flavor_find(arg + 9);
-            if (!options->flavor) {
+            if (!mdwn_flavor_find(arg + 9)) {
                 fprintf(stderr, "mdwn: unsupported flavor '%s'\n", arg + 9);
                 return -1;
             }
+            options->flavor = arg + 9;
             continue;
         }
 
@@ -112,14 +109,20 @@ parse_options(struct options *options, int argc, char **argv)
                 fprintf(stderr, "mdwn: %s requires an argument\n", arg);
                 return -1;
             }
-            if (set_theme(options, argv[i]) < 0)
+            if (!valid_theme(argv[i])) {
+                fprintf(stderr, "mdwn: unsupported theme '%s'\n", argv[i]);
                 return -1;
+            }
+            options->theme = argv[i];
             continue;
         }
 
         if (strncmp(arg, "--theme=", 8) == 0) {
-            if (set_theme(options, arg + 8) < 0)
+            if (!valid_theme(arg + 8)) {
+                fprintf(stderr, "mdwn: unsupported theme '%s'\n", arg + 8);
                 return -1;
+            }
+            options->theme = arg + 8;
             continue;
         }
 
@@ -137,12 +140,6 @@ parse_options(struct options *options, int argc, char **argv)
 
     if (!options->path) {
         fprintf(stderr, "mdwn: missing markdown file\n");
-        return -1;
-    }
-
-    if (options->dark_theme && !options->flavor->dark_theme) {
-        fprintf(stderr, "mdwn: flavor '%s' does not provide a dark theme\n",
-                options->flavor->name);
         return -1;
     }
 
@@ -170,6 +167,7 @@ int
 main(int argc, char **argv)
 {
     struct options options;
+    struct mdwn_config config;
     struct mdwn_document document;
     const struct mdwn_theme *theme;
     char *file;
@@ -183,8 +181,25 @@ main(int argc, char **argv)
         return 2;
     }
 
-    theme = options.dark_theme ? options.flavor->dark_theme
-                               : options.flavor->theme;
+    mdwn_config_init(&config);
+    if (!options.no_config &&
+        mdwn_config_load(&config, options.path, error, sizeof(error)) < 0) {
+        fprintf(stderr, "mdwn: %s\n", error[0] ? error
+                                                : "could not load configuration");
+        return 1;
+    }
+    if (options.flavor)
+        config.flavor = mdwn_flavor_find(options.flavor);
+    if (options.theme)
+        config.dark_theme = strcmp(options.theme, "dark") == 0;
+    if (config.dark_theme && !config.flavor->dark_theme) {
+        fprintf(stderr, "mdwn: flavor '%s' does not provide a dark theme\n",
+                config.flavor->name);
+        return 1;
+    }
+
+    theme = config.dark_theme ? config.flavor->dark_theme
+                              : config.flavor->theme;
 
     file = SDL_LoadFile(options.path, &file_size);
     if (!file) {
@@ -199,7 +214,7 @@ main(int argc, char **argv)
     }
 
     if (mdwn_markdown_parse(&document, file, file_size,
-                            options.flavor, error, sizeof(error)) < 0) {
+                            config.flavor, error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "could not parse markdown");
         goto out;
     }
@@ -211,7 +226,7 @@ main(int argc, char **argv)
     }
 
     error[0] = '\0';
-    if (mdwn_viewer_run(title, &document, theme,
+    if (mdwn_viewer_run(title, &document, theme, &config.viewer,
                         error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "viewer failed");
         goto out;

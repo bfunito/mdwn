@@ -1,7 +1,7 @@
 # mdwn
 
 `mdwn` is a fast and lightweight graphical Markdown viewer written in C.
-It uses [MD4C](https://github.com/mity/md4c) for parsing, [SDL3](https://www.libsdl.org/) and SDL_ttf for rendering, Fontconfig for font discovery, and [GNU Source Highlight](https://www.gnu.org/software/src-highlite/) for syntax highlighting.
+It uses [MD4C](https://github.com/mity/md4c) for parsing, [SDL3](https://www.libsdl.org/) and SDL_ttf for rendering, Fontconfig for font discovery, [GNU Source Highlight](https://www.gnu.org/software/src-highlite/) for syntax highlighting, and toml++ for configuration parsing.
 
 ## Features
 
@@ -16,12 +16,12 @@ It uses [MD4C](https://github.com/mity/md4c) for parsing, [SDL3](https://www.lib
 
 ### Dependencies
 
-In addition to the libraries used by `mdwn`, building requires a C11 compiler, a C++11 compiler, Make, and pkg-config.
+In addition to the libraries used by `mdwn`, building requires a C11 compiler, a C++17 compiler, Make, and pkg-config.
 
 #### Arch Linux
 
 ```sh
-sudo pacman -S --needed base-devel sdl3 sdl3_ttf md4c fontconfig source-highlight
+sudo pacman -S --needed base-devel sdl3 sdl3_ttf md4c fontconfig source-highlight tomlplusplus
 ```
 
 #### Debian
@@ -31,7 +31,7 @@ On Debian 13 (Trixie) or later:
 ```sh
 sudo apt install build-essential pkgconf \
     libsdl3-dev libsdl3-ttf-dev libmd4c-dev \
-    libfontconfig-dev libsource-highlight-dev
+    libfontconfig-dev libsource-highlight-dev libtomlplusplus-dev
 ```
 
 Older Debian releases do not provide SDL3 in their official repositories.
@@ -42,7 +42,7 @@ Debian-based distributions may require a sufficiently recent release for the sam
 ```sh
 sudo dnf install gcc gcc-c++ make pkgconf-pkg-config \
     SDL3-devel SDL3_ttf-devel md4c-devel \
-    fontconfig-devel source-highlight-devel
+    fontconfig-devel source-highlight-devel tomlplusplus-devel
 ```
 
 ### Build and install
@@ -104,6 +104,34 @@ mdwn --flavor gitlab --theme dark examples/hello_mdwn.md
 Supported flavors are `github`, `gitlab`, and `codeberg`. Supported themes are `light` and `dark`.
 
 Run `mdwn --help` for a command-line summary or `man mdwn` for all options, controls, environment variables, and exit statuses.
+
+
+## Configuration
+
+`mdwn` reads TOML configuration from the following locations, with later
+sources overriding earlier ones:
+
+1. `$XDG_CONFIG_DIRS/mdwn/config.toml` (default: `/etc/xdg/mdwn/config.toml`)
+2. `$XDG_CONFIG_HOME/mdwn/config.toml` (default: `~/.config/mdwn/config.toml`)
+3. The nearest `.mdwn/config.toml` found by searching from the document's
+   directory toward the filesystem root
+4. Command-line options
+
+Built-in defaults are used when no configuration file exists. Pass
+`--no-config` to ignore all configuration files.
+
+```toml
+flavor = "github"
+theme = "dark"
+
+[viewer]
+initial_zoom = 1.0
+min_zoom = 1.0
+max_zoom = 5.0
+wheel_zoom_speed = 1.0
+scroll_step = 48.0
+```
+
 
 ## Markdown flavors
 
