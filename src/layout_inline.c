@@ -157,6 +157,7 @@ flow_place_token(struct inline_flow *flow,
         item->as.text.layout_x_scale = natural_width > 0.0f
             ? width / natural_width
             : 1.0f;
+        item->as.text.inline_code = style.code_background;
         item->as.text.color = style.color;
     } else
         TTF_DestroyText(object);

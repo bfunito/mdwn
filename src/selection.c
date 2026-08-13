@@ -448,6 +448,29 @@ mdwn_selection_text(const struct mdwn_selection *selection,
     return text;
 }
 
+static bool
+text_boundary_x(const struct mdwn_draw_item *item, size_t offset,
+                float *position)
+{
+    TTF_SubString substring;
+    bool rtl;
+
+    if (!TTF_GetTextSubString(item->as.text.object, (int)offset,
+                              &substring))
+        return false;
+
+    rtl = (substring.flags & TTF_SUBSTRING_DIRECTION_MASK) ==
+        TTF_DIRECTION_RTL;
+    if (offset == 0)
+        *position = rtl ? item->as.text.width : 0.0f;
+    else if (offset == item->as.text.text_length)
+        *position = rtl ? 0.0f : item->as.text.width;
+    else
+        *position = (float)(substring.rect.x +
+            (rtl ? substring.rect.w : 0)) * item->as.text.layout_x_scale;
+    return true;
+}
+
 bool
 mdwn_selection_text_bounds(const struct mdwn_draw_item *item,
                            size_t offset, size_t length,
@@ -457,6 +480,8 @@ mdwn_selection_text_bounds(const struct mdwn_draw_item *item,
     int i;
     int left = INT_MAX;
     int right = INT_MIN;
+    float scaled_left, scaled_right;
+    float position;
 
     if (offset > INT_MAX || length > (size_t)INT_MAX - offset)
         return false;
@@ -476,8 +501,21 @@ mdwn_selection_text_bounds(const struct mdwn_draw_item *item,
 
     if (left == INT_MAX)
         return false;
-    *x = mdwn_layout_text_x(item)
-        + (float)left * item->as.text.layout_x_scale;
-    *width = (float)(right - left) * item->as.text.layout_x_scale;
+    scaled_left = (float)left * item->as.text.layout_x_scale;
+    scaled_right = (float)right * item->as.text.layout_x_scale;
+
+    if (!item->as.text.inline_code &&
+        text_boundary_x(item, offset, &position)) {
+        scaled_left = fminf(scaled_left, position);
+        scaled_right = fmaxf(scaled_right, position);
+    }
+    if (!item->as.text.inline_code &&
+        text_boundary_x(item, offset + length, &position)) {
+        scaled_left = fminf(scaled_left, position);
+        scaled_right = fmaxf(scaled_right, position);
+    }
+
+    *x = mdwn_layout_text_x(item) + scaled_left;
+    *width = scaled_right - scaled_left;
     return true;
 }
