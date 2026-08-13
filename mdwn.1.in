@@ -199,8 +199,6 @@ filesystem boundary.
 .SH LIMITATIONS
 Raw HTML is displayed literally.
 .TP
-Images are not displayed; their alternative text is rendered instead.
-.TP
 LaTeX math is displayed as text rather than typeset.
 .SH SEE ALSO
 .BR source-highlight (1)

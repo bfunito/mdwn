@@ -142,7 +142,6 @@ scroll_step = 48.0
 ## Current limitations
 
 - Raw HTML is rendered literally.
-- Images are not displayed; their alternative text is rendered instead.
 - LaTeX math is displayed as text rather than typeset.
 
 ## License
