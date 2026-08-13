@@ -36,6 +36,10 @@ int main(void)
 Also a code block with a lot of text in a single line that you can scroll horizontally because you wouldn't be able to read everything otherwise
 ```
 
+## Images
+
+![Silly cat](images/Sillycats.png)
+
 ## Table
 
 | Lorem | ipsum | dolor |
