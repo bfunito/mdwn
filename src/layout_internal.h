@@ -53,9 +53,9 @@ float mdwn_layout_inline_sequence(struct build_context *ctx,
                                   const struct mdwn_node **node,
                                   float x, float y, float width,
                                   struct mdwn_color color, float line_height);
-int mdwn_layout_inline_text_right(struct build_context *ctx,
-                                  const char *text, size_t len,
-                                  float x, float y, float width,
-                                  struct inline_style style);
+int mdwn_layout_list_marker(struct build_context *ctx,
+                            const char *text, size_t len,
+                            float x, float y, float width,
+                            struct inline_style style);
 
 #endif

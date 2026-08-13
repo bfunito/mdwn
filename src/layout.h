@@ -46,6 +46,7 @@ struct mdwn_draw_item {
             float raster_scale;
             float raster_x_scale;
             bool inline_code;
+            bool list_marker;
             struct mdwn_color color;
             struct mdwn_code_block *code_block;
         } text;

@@ -531,7 +531,7 @@ layout_list(struct build_context *ctx, const struct mdwn_node *list,
         }
 
         if (prefix_len > 0 &&
-            mdwn_layout_inline_text_right(
+            mdwn_layout_list_marker(
                 ctx, prefix, (size_t)prefix_len,
                 x, item_y, indent - 6.0f, prefix_style) < 0)
             return y;

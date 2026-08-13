@@ -9,6 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool
+selectable_text(const struct mdwn_draw_item *item)
+{
+    return item->type == MDWN_DRAW_TEXT && !item->as.text.list_marker;
+}
+
 static int
 compare_positions(struct mdwn_text_position a, struct mdwn_text_position b)
 {
@@ -48,10 +54,14 @@ mdwn_selection_item_range(const struct mdwn_selection *selection,
                           size_t *start_offset, size_t *end_offset)
 {
     struct mdwn_text_position start, end;
-    size_t order = item->as.text.order;
+    size_t order;
 
-    if (!selection_range(selection, &start, &end) ||
-        order < start.item->as.text.order ||
+    if (!selectable_text(item) ||
+        !selection_range(selection, &start, &end))
+        return false;
+
+    order = item->as.text.order;
+    if (order < start.item->as.text.order ||
         order > end.item->as.text.order)
         return false;
 
@@ -114,7 +124,7 @@ find_text_position(const struct mdwn_layout *layout, float x, float y,
         float left, right, top, bottom;
         float dx, dy;
 
-        if (item->type != MDWN_DRAW_TEXT)
+        if (!selectable_text(item))
             continue;
 
         left = mdwn_layout_text_x(item);
@@ -271,7 +281,7 @@ line_range(const struct mdwn_layout *layout,
     bool found = false;
 
     for (item = layout->first; item; item = item->next) {
-        if (item->type != MDWN_DRAW_TEXT)
+        if (!selectable_text(item))
             continue;
 
         if (item == clicked) {
@@ -379,7 +389,7 @@ mdwn_selection_select_all(struct mdwn_selection *selection,
     const struct mdwn_draw_item *last = NULL;
 
     for (item = layout->first; item; item = item->next) {
-        if (item->type == MDWN_DRAW_TEXT) {
+        if (selectable_text(item)) {
             if (!first)
                 first = item;
             last = item;

@@ -370,10 +370,10 @@ mdwn_layout_inline_sequence(struct build_context *ctx,
 }
 
 int
-mdwn_layout_inline_text_right(struct build_context *ctx,
-                              const char *text, size_t len,
-                              float x, float y, float width,
-                              struct inline_style style)
+mdwn_layout_list_marker(struct build_context *ctx,
+                        const char *text, size_t len,
+                        float x, float y, float width,
+                        struct inline_style style)
 {
     struct inline_flow flow;
     struct mdwn_draw_item *item;
@@ -385,5 +385,6 @@ mdwn_layout_inline_text_right(struct build_context *ctx,
 
     item = ctx->layout->last;
     item->as.text.x += flow.width - item->as.text.width;
+    item->as.text.list_marker = true;
     return 0;
 }
