@@ -316,7 +316,7 @@ mdwn_selection_begin(struct mdwn_selection *selection,
     struct mdwn_text_position start, end;
 
     selection->dragging = false;
-    if (!find_text_position(layout, x, y, false, &position)) {
+    if (!find_text_position(layout, x, y, true, &position)) {
         selection->valid = false;
         return false;
     }
