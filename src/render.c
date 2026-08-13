@@ -18,7 +18,7 @@
 #define INITIAL_HEIGHT 720
 #define WHEEL_ZOOM_STEP 1.1f
 #define WHEEL_ZOOM_SENSITIVITY 0.05f
-#define RASTER_ZOOM_STEP 0.25f
+#define RASTER_ZOOM_STEP 0.125f
 
 static const struct mdwn_color scrollbar_color = { 139, 148, 158, 120 };
 
