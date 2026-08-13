@@ -1,11 +1,7 @@
 #include "config.h"
-#include "document.h"
 #include "flavor.h"
-#include "markdown.h"
 #include "render.h"
 #include "version.h"
-
-#include <SDL3/SDL.h>
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -168,10 +164,7 @@ main(int argc, char **argv)
 {
     struct options options;
     struct mdwn_config config;
-    struct mdwn_document document;
     const struct mdwn_theme *theme;
-    char *file;
-    size_t file_size;
     char error[512] = {0};
     char *title = NULL;
     int status = 1;
@@ -201,24 +194,6 @@ main(int argc, char **argv)
     theme = config.dark_theme ? config.flavor->dark_theme
                               : config.flavor->theme;
 
-    file = SDL_LoadFile(options.path, &file_size);
-    if (!file) {
-        fprintf(stderr, "mdwn: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    if (mdwn_document_init(&document) < 0) {
-        fprintf(stderr, "mdwn: out of memory while creating document\n");
-        SDL_free(file);
-        return 1;
-    }
-
-    if (mdwn_markdown_parse(&document, file, file_size,
-                            config.flavor, error, sizeof(error)) < 0) {
-        fprintf(stderr, "mdwn: %s\n", error[0] ? error : "could not parse markdown");
-        goto out;
-    }
-
     title = make_title(options.path);
     if (!title) {
         fprintf(stderr, "mdwn: out of memory while creating window title\n");
@@ -226,7 +201,8 @@ main(int argc, char **argv)
     }
 
     error[0] = '\0';
-    if (mdwn_viewer_run(title, options.path, &document, theme, &config.viewer,
+    if (mdwn_viewer_run(title, options.path, config.flavor,
+                        theme, &config.viewer,
                         error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "viewer failed");
         goto out;
@@ -235,7 +211,5 @@ main(int argc, char **argv)
     status = 0;
 out:
     free(title);
-    mdwn_document_destroy(&document);
-    SDL_free(file);
     return status;
 }

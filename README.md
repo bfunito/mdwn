@@ -12,6 +12,10 @@ It uses [MD4C](https://github.com/mity/md4c) for parsing, [SDL3](https://www.lib
 - Text selection and clipboard support
 - Clickable links
 
+### Linux only
+
+- Automatic reload when the file is saved
+
 ## Installing from source
 
 ### Dependencies

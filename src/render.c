@@ -2,10 +2,13 @@
 
 #include "config.h"
 #include "document.h"
+#include "flavor.h"
 #include "font.h"
 #include "layout.h"
+#include "markdown.h"
 #include "selection.h"
 #include "theme.h"
+#include "watch.h"
 
 #include <SDL3/SDL.h>
 
@@ -19,6 +22,7 @@
 #define WHEEL_ZOOM_STEP 1.1f
 #define WHEEL_ZOOM_SENSITIVITY 0.05f
 #define RASTER_ZOOM_STEP 0.125f
+#define WATCH_INTERVAL_MS 100
 
 static const struct mdwn_color scrollbar_color = { 139, 148, 158, 120 };
 
@@ -27,10 +31,14 @@ struct viewer {
     SDL_Renderer *renderer;
     TTF_TextEngine *text_engine;
     struct mdwn_font_system *fonts;
+    struct mdwn_document document;
     struct mdwn_layout layout;
     struct mdwn_selection selection;
-    const struct mdwn_document *doc;
+    struct mdwn_watcher watcher;
+    char *source;
+    size_t source_size;
     const char *document_path;
+    const struct mdwn_flavor *flavor;
     const struct mdwn_theme *theme;
     const struct mdwn_viewer_config *config;
     float zoom;
@@ -621,6 +629,19 @@ clamp_scroll(struct viewer *viewer)
         viewer->scroll_y = max_scroll_y;
 }
 
+static void
+layout_changed(struct viewer *viewer)
+{
+    if (viewer->selection.dragging || viewer->dragged_code_block)
+        (void)SDL_CaptureMouse(false);
+    viewer->dragged_code_block = NULL;
+    viewer->selection.valid = false;
+    viewer->selection.dragging = false;
+    clamp_scroll(viewer);
+    viewer->dirty = true;
+    update_cursor_at_mouse(viewer);
+}
+
 static int
 rebuild_layout(struct viewer *viewer)
 {
@@ -633,19 +654,102 @@ rebuild_layout(struct viewer *viewer)
         return -1;
     }
 
-    if (mdwn_layout_build(&viewer->layout, viewer->doc, viewer->fonts,
+    if (mdwn_layout_build(&viewer->layout, &viewer->document, viewer->fonts,
                           viewer->theme, viewer->renderer,
                           viewer->document_path,
                           viewer->width, viewer->height,
                           viewer->err, viewer->err_size) < 0)
         return -1;
 
-    viewer->selection.valid = false;
-    viewer->selection.dragging = false;
-    clamp_scroll(viewer);
-    viewer->dirty = true;
-    update_cursor_at_mouse(viewer);
+    layout_changed(viewer);
     return 0;
+}
+
+static void
+report_reload_error(const char *message)
+{
+    fprintf(stderr, "mdwn: could not reload document: %s\n", message);
+}
+
+static void
+reload_document(struct viewer *viewer)
+{
+    struct mdwn_document document;
+    struct mdwn_document old_document;
+    struct mdwn_layout layout;
+    struct mdwn_layout old_layout;
+    char error[512] = {0};
+    char *source;
+    char *old_source;
+    size_t source_size;
+
+    source = SDL_LoadFile(viewer->document_path, &source_size);
+    if (!source) {
+        report_reload_error(SDL_GetError());
+        return;
+    }
+    if (source_size == viewer->source_size &&
+        memcmp(source, viewer->source, source_size) == 0) {
+        SDL_free(source);
+        return;
+    }
+
+    if (mdwn_document_init(&document) < 0) {
+        SDL_free(source);
+        report_reload_error("out of memory while creating document");
+        return;
+    }
+    if (mdwn_markdown_parse(&document, source, source_size, viewer->flavor,
+                            error, sizeof(error)) < 0) {
+        mdwn_document_destroy(&document);
+        SDL_free(source);
+        report_reload_error(error[0] ? error : "could not parse markdown");
+        return;
+    }
+
+    mdwn_layout_init(&layout);
+    mdwn_layout_take_images(&layout, &viewer->layout);
+    if (mdwn_layout_build(&layout, &document, viewer->fonts, viewer->theme,
+                          viewer->renderer, viewer->document_path,
+                          viewer->width, viewer->height,
+                          error, sizeof(error)) < 0) {
+        mdwn_layout_take_images(&viewer->layout, &layout);
+        mdwn_layout_destroy(&layout);
+        mdwn_document_destroy(&document);
+        SDL_free(source);
+        report_reload_error(error[0] ? error : "could not build layout");
+        return;
+    }
+
+    old_document = viewer->document;
+    viewer->document = document;
+    old_layout = viewer->layout;
+    viewer->layout = layout;
+    old_source = viewer->source;
+    viewer->source = source;
+    viewer->source_size = source_size;
+
+    layout_changed(viewer);
+    mdwn_layout_destroy(&old_layout);
+    mdwn_document_destroy(&old_document);
+    SDL_free(old_source);
+}
+
+static void
+check_document_updates(struct viewer *viewer)
+{
+    char error[512] = {0};
+    bool changed;
+
+    if (mdwn_watcher_poll(&viewer->watcher, &changed,
+                          error, sizeof(error)) < 0) {
+        fprintf(stderr, "mdwn: %s\n", error[0] ? error
+                                                : "filesystem watcher failed");
+        mdwn_watcher_destroy(&viewer->watcher);
+        return;
+    }
+    if (changed)
+        reload_document(viewer);
 }
 
 static void
@@ -915,7 +1019,10 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
 static void
 viewer_cleanup(struct viewer *viewer)
 {
+    mdwn_watcher_destroy(&viewer->watcher);
     mdwn_layout_destroy(&viewer->layout);
+    mdwn_document_destroy(&viewer->document);
+    SDL_free(viewer->source);
     if (viewer->text_engine)
         TTF_DestroyRendererTextEngine(viewer->text_engine);
     mdwn_font_system_destroy(viewer->fonts);
@@ -934,7 +1041,7 @@ viewer_cleanup(struct viewer *viewer)
 
 int
 mdwn_viewer_run(const char *title, const char *document_path,
-                const struct mdwn_document *doc,
+                const struct mdwn_flavor *flavor,
                 const struct mdwn_theme *theme,
                 const struct mdwn_viewer_config *config,
                 char *err, size_t err_size)
@@ -942,11 +1049,13 @@ mdwn_viewer_run(const char *title, const char *document_path,
     struct viewer viewer;
     struct mdwn_color background = theme->background;
     SDL_Event event;
+    char watcher_error[512] = {0};
     int rc = -1;
 
     memset(&viewer, 0, sizeof(viewer));
-    viewer.doc = doc;
+    viewer.watcher.fd = -1;
     viewer.document_path = document_path;
+    viewer.flavor = flavor;
     viewer.theme = theme;
     viewer.config = config;
     viewer.zoom = config->initial_zoom;
@@ -959,10 +1068,42 @@ mdwn_viewer_run(const char *title, const char *document_path,
     viewer.height = INITIAL_HEIGHT;
     mdwn_layout_init(&viewer.layout);
 
+    (void)mdwn_watcher_init(&viewer.watcher, document_path,
+                            watcher_error, sizeof(watcher_error));
+
+    viewer.source = SDL_LoadFile(document_path, &viewer.source_size);
+    if (!viewer.source) {
+        if (err && err_size)
+            snprintf(err, err_size, "%s", SDL_GetError());
+        mdwn_watcher_destroy(&viewer.watcher);
+        mdwn_layout_destroy(&viewer.layout);
+        return -1;
+    }
+    if (mdwn_document_init(&viewer.document) < 0) {
+        if (err && err_size)
+            snprintf(err, err_size, "out of memory while creating document");
+        mdwn_watcher_destroy(&viewer.watcher);
+        mdwn_layout_destroy(&viewer.layout);
+        SDL_free(viewer.source);
+        return -1;
+    }
+    if (mdwn_markdown_parse(&viewer.document,
+                            viewer.source, viewer.source_size, flavor,
+                            err, err_size) < 0) {
+        mdwn_watcher_destroy(&viewer.watcher);
+        mdwn_layout_destroy(&viewer.layout);
+        mdwn_document_destroy(&viewer.document);
+        SDL_free(viewer.source);
+        return -1;
+    }
+    if (viewer.watcher.fd < 0)
+        fprintf(stderr, "mdwn: warning: %s\n", watcher_error[0] ? watcher_error
+                                      : "could not watch document for changes");
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         if (err && err_size)
             snprintf(err, err_size, "SDL initialization failed: %s", SDL_GetError());
-        mdwn_layout_destroy(&viewer.layout);
+        viewer_cleanup(&viewer);
         return -1;
     }
 
@@ -1016,18 +1157,16 @@ mdwn_viewer_run(const char *title, const char *document_path,
             viewer.dirty = false;
         }
 
-        if (!SDL_WaitEvent(&event)) {
-            set_sdl_error(&viewer, "could not wait for window event");
-            goto out;
-        }
-
-        if (handle_event(&viewer, &event) < 0)
-            goto out;
-
-        while (SDL_PollEvent(&event)) {
+        if (SDL_WaitEventTimeout(&event, WATCH_INTERVAL_MS)) {
             if (handle_event(&viewer, &event) < 0)
                 goto out;
+
+            while (SDL_PollEvent(&event)) {
+                if (handle_event(&viewer, &event) < 0)
+                    goto out;
+            }
         }
+        check_document_updates(&viewer);
     }
 
     rc = 0;

@@ -12,7 +12,7 @@
 
 struct mdwn_loaded_image {
     struct mdwn_loaded_image *next;
-    const char *source;
+    char *source;
     SDL_Texture *texture;
     float width, height;
 };
@@ -161,7 +161,11 @@ mdwn_layout_get_image(struct build_context *ctx, const char *source,
     image = calloc(1, sizeof(*image));
     if (!image)
         goto out_of_memory;
-    image->source = source;
+    image->source = strdup(source);
+    if (!image->source) {
+        free(image);
+        goto out_of_memory;
+    }
     image->next = ctx->layout->images;
     ctx->layout->images = image;
 
@@ -1081,11 +1085,20 @@ mdwn_layout_destroy(struct mdwn_layout *layout)
         struct mdwn_loaded_image *next = image->next;
         if (image->texture)
             SDL_DestroyTexture(image->texture);
+        free(image->source);
         free(image);
         image = next;
     }
     mdwn_arena_destroy(&layout->arena);
     memset(layout, 0, sizeof(*layout));
+}
+
+void
+mdwn_layout_take_images(struct mdwn_layout *layout,
+                        struct mdwn_layout *source)
+{
+    layout->images = source->images;
+    source->images = NULL;
 }
 
 int

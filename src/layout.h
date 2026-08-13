@@ -90,6 +90,8 @@ float mdwn_layout_text_x(const struct mdwn_draw_item *item);
 
 void mdwn_layout_init(struct mdwn_layout *layout);
 void mdwn_layout_destroy(struct mdwn_layout *layout);
+void mdwn_layout_take_images(struct mdwn_layout *layout,
+                             struct mdwn_layout *source);
 void mdwn_layout_clear_render_text(struct mdwn_layout *layout);
 int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_document *doc,

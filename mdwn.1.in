@@ -9,6 +9,7 @@ mdwn \- view Markdown documents
 .B mdwn
 is a graphical Markdown viewer.
 It parses a Markdown file and displays the rendered document in an SDL window.
+On Linux, the view is updated automatically when the file is saved.
 .SH OPTIONS
 .TP
 .BR \-f " " name ", " \-\-flavor " " name

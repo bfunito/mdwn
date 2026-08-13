@@ -38,6 +38,7 @@ SRC = \
 	src/flavor.c \
 	src/document.c \
 	src/markdown.c \
+	src/watch.c \
 	src/font.c \
 	src/layout_inline.c \
 	src/layout.c \
