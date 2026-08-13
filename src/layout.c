@@ -3,10 +3,19 @@
 #include "highlight.h"
 #include "layout_internal.h"
 
+#include <SDL3_image/SDL_image.h>
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct mdwn_loaded_image {
+    struct mdwn_loaded_image *next;
+    const char *source;
+    SDL_Texture *texture;
+    float width, height;
+};
 
 void
 mdwn_layout_set_error(struct build_context *ctx, const char *message)
@@ -104,6 +113,82 @@ mdwn_layout_font_for_style(struct build_context *ctx,
     if (!font)
         ctx->failed = 1;
     return font;
+}
+
+static char *
+resolve_image_path(struct build_context *ctx, const char *source)
+{
+    const char *slash;
+    size_t directory_len;
+    size_t source_len;
+    char *path;
+
+    if (source[0] == '/')
+        return strdup(source);
+
+    slash = strrchr(ctx->document_path, '/');
+    if (!slash)
+        return strdup(source);
+
+    directory_len = (size_t)(slash - ctx->document_path) + 1;
+    source_len = strlen(source);
+    if (directory_len > SIZE_MAX - source_len - 1)
+        return NULL;
+
+    path = malloc(directory_len + source_len + 1);
+    if (!path)
+        return NULL;
+    memcpy(path, ctx->document_path, directory_len);
+    memcpy(path + directory_len, source, source_len + 1);
+    return path;
+}
+
+bool
+mdwn_layout_get_image(struct build_context *ctx, const char *source,
+                      SDL_Texture **texture, float *width, float *height)
+{
+    struct mdwn_loaded_image *image;
+    char *path;
+
+    if (!source || !source[0])
+        return false;
+
+    for (image = ctx->layout->images; image; image = image->next) {
+        if (strcmp(image->source, source) == 0)
+            goto found;
+    }
+
+    image = calloc(1, sizeof(*image));
+    if (!image)
+        goto out_of_memory;
+    image->source = source;
+    image->next = ctx->layout->images;
+    ctx->layout->images = image;
+
+    path = resolve_image_path(ctx, source);
+    if (!path)
+        goto out_of_memory;
+    image->texture = IMG_LoadTexture(ctx->renderer, path);
+    free(path);
+    if (image->texture &&
+        !SDL_GetTextureSize(image->texture, &image->width, &image->height)) {
+        SDL_DestroyTexture(image->texture);
+        image->texture = NULL;
+    }
+    if (image->texture)
+        (void)SDL_SetTextureScaleMode(image->texture, SDL_SCALEMODE_LINEAR);
+
+found:
+    if (!image->texture)
+        return false;
+    *texture = image->texture;
+    *width = image->width;
+    *height = image->height;
+    return true;
+
+out_of_memory:
+    mdwn_layout_set_error(ctx, "out of memory while loading image");
+    return false;
 }
 
 static size_t
@@ -989,7 +1074,16 @@ mdwn_layout_clear_render_text(struct mdwn_layout *layout)
 void
 mdwn_layout_destroy(struct mdwn_layout *layout)
 {
+    struct mdwn_loaded_image *image = layout->images;
+
     destroy_text(layout, false);
+    while (image) {
+        struct mdwn_loaded_image *next = image->next;
+        if (image->texture)
+            SDL_DestroyTexture(image->texture);
+        free(image);
+        image = next;
+    }
     mdwn_arena_destroy(&layout->arena);
     memset(layout, 0, sizeof(*layout));
 }
@@ -999,6 +1093,7 @@ mdwn_layout_build(struct mdwn_layout *layout,
                   const struct mdwn_document *doc,
                   struct mdwn_font_system *fonts,
                   const struct mdwn_theme *theme,
+                  SDL_Renderer *renderer, const char *document_path,
                   int viewport_width, int viewport_height,
                   char *err, size_t err_size)
 {
@@ -1026,6 +1121,8 @@ mdwn_layout_build(struct mdwn_layout *layout,
     ctx.layout = layout;
     ctx.fonts = fonts;
     ctx.theme = theme;
+    ctx.renderer = renderer;
+    ctx.document_path = document_path;
     ctx.err = err;
     ctx.err_size = err_size;
 
@@ -1055,6 +1152,9 @@ mdwn_layout_build(struct mdwn_layout *layout,
             right = item->as.text.code_block
                 ? item->as.text.code_block->x + item->as.text.code_block->w
                 : item->as.text.x + item->as.text.width;
+            break;
+        case MDWN_DRAW_IMAGE:
+            right = item->as.image.x + item->as.image.w;
             break;
         case MDWN_DRAW_RECT:
             right = item->as.rect.x + item->as.rect.w;

@@ -11,6 +11,7 @@ struct inline_flow {
     float x;
     float top;
     float line_top;
+    float base_line_height;
     float line_height;
     float baseline_offset;
     float max_width;
@@ -50,6 +51,7 @@ flow_init(struct inline_flow *flow, struct build_context *ctx,
     flow->line_top = y;
     flow->emit = emit;
     flow->line_height = style_line_height(ctx, base, &flow->baseline_offset);
+    flow->base_line_height = flow->line_height;
     return ctx->failed ? -1 : 0;
 }
 
@@ -59,7 +61,45 @@ flow_newline(struct inline_flow *flow)
     flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
     flow->line_top += flow->line_height;
     flow->x = flow->x0;
+    flow->line_height = flow->base_line_height;
     flow->has_content = false;
+}
+
+static int
+flow_place_image(struct inline_flow *flow, const char *source,
+                 struct inline_style style)
+{
+    SDL_Texture *texture;
+    float natural_width, natural_height;
+    float width, height;
+    struct mdwn_draw_item *item;
+
+    if (!mdwn_layout_get_image(flow->ctx, source, &texture,
+                               &natural_width, &natural_height))
+        return flow->ctx->failed ? -1 : 0;
+
+    width = fminf(natural_width, flow->width);
+    height = natural_height * width / natural_width;
+    if (flow->has_content && flow->x + width > flow->x0 + flow->width)
+        flow_newline(flow);
+
+    if (flow->emit) {
+        item = mdwn_layout_new_item(flow->ctx, MDWN_DRAW_IMAGE);
+        if (!item)
+            return -1;
+        item->as.image.texture = texture;
+        item->as.image.href = style.href;
+        item->as.image.x = flow->x;
+        item->as.image.y = flow->line_top;
+        item->as.image.w = width;
+        item->as.image.h = height;
+    }
+
+    flow->x += width;
+    flow->line_height = fmaxf(flow->line_height, height);
+    flow->max_width = fmaxf(flow->max_width, flow->x - flow->x0);
+    flow->has_content = true;
+    return 1;
 }
 
 static int
@@ -244,10 +284,14 @@ layout_inline_node(struct inline_flow *flow, const struct mdwn_node *node,
         style.color = flow->ctx->theme->link;
         style.href = node->as.link.href;
         break;
-    case MDWN_NODE_IMAGE:
+    case MDWN_NODE_IMAGE: {
+        int placed = flow_place_image(flow, node->as.image.src, style);
+        if (placed != 0)
+            return placed < 0 ? -1 : 0;
         style.italic = true;
         style.color = flow->ctx->theme->muted;
         break;
+    }
     case MDWN_NODE_RAW_HTML_SPAN:
         style.family = MDWN_FONT_MONO;
         style.color = flow->ctx->theme->muted;

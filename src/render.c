@@ -30,6 +30,7 @@ struct viewer {
     struct mdwn_layout layout;
     struct mdwn_selection selection;
     const struct mdwn_document *doc;
+    const char *document_path;
     const struct mdwn_theme *theme;
     const struct mdwn_viewer_config *config;
     float zoom;
@@ -182,22 +183,35 @@ text_at(const struct mdwn_layout *layout, float x, float y)
 static const char *
 link_at(const struct mdwn_layout *layout, float x, float y)
 {
-    const struct mdwn_draw_item *item = text_at(layout, x, y);
+    const struct mdwn_draw_item *item;
+    const struct mdwn_draw_item *text = text_at(layout, x, y);
 
-    return item ? item->as.text.href : NULL;
+    if (text && text->as.text.href)
+        return text->as.text.href;
+    for (item = layout->first; item; item = item->next) {
+        if (item->type == MDWN_DRAW_IMAGE && item->as.image.href &&
+            x >= item->as.image.x &&
+            x <= item->as.image.x + item->as.image.w &&
+            y >= item->as.image.y &&
+            y <= item->as.image.y + item->as.image.h)
+            return item->as.image.href;
+    }
+    return NULL;
 }
 
 static void
 update_cursor(struct viewer *viewer, float x, float y)
 {
+    float doc_x = document_x(viewer, x);
+    float doc_y = document_y(viewer, y);
     const struct mdwn_draw_item *item = text_at(
-        &viewer->layout, document_x(viewer, x), document_y(viewer, y));
+        &viewer->layout, doc_x, doc_y);
     SDL_Cursor *cursor = viewer->default_cursor;
 
-    if (item)
-        cursor = item->as.text.href
-            ? viewer->link_cursor
-            : viewer->text_cursor;
+    if (link_at(&viewer->layout, doc_x, doc_y))
+        cursor = viewer->link_cursor;
+    else if (item)
+        cursor = viewer->text_cursor;
     if (cursor != SDL_GetCursor())
         (void)SDL_SetCursor(cursor);
 }
@@ -504,6 +518,23 @@ render_frame(struct viewer *viewer)
             clip = next_clip;
         }
         switch (item->type) {
+        case MDWN_DRAW_IMAGE: {
+            SDL_FRect rect;
+            rect.x = item->as.image.x - viewer->scroll_x;
+            rect.y = item->as.image.y - viewer->scroll_y;
+            rect.w = item->as.image.w;
+            rect.h = item->as.image.h;
+
+            if (rect.x + rect.w < 0.0f || rect.x > viewport_width ||
+                rect.y + rect.h < 0.0f || rect.y > viewport_height)
+                break;
+            if (!SDL_RenderTexture(viewer->renderer, item->as.image.texture,
+                                   NULL, &rect)) {
+                set_sdl_error(viewer, "could not render image");
+                return -1;
+            }
+            break;
+        }
         case MDWN_DRAW_RECT: {
             SDL_FRect rect;
             rect.x = item->as.rect.x - viewer->scroll_x;
@@ -603,7 +634,8 @@ rebuild_layout(struct viewer *viewer)
     }
 
     if (mdwn_layout_build(&viewer->layout, viewer->doc, viewer->fonts,
-                          viewer->theme,
+                          viewer->theme, viewer->renderer,
+                          viewer->document_path,
                           viewer->width, viewer->height,
                           viewer->err, viewer->err_size) < 0)
         return -1;
@@ -901,7 +933,8 @@ viewer_cleanup(struct viewer *viewer)
 }
 
 int
-mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
+mdwn_viewer_run(const char *title, const char *document_path,
+                const struct mdwn_document *doc,
                 const struct mdwn_theme *theme,
                 const struct mdwn_viewer_config *config,
                 char *err, size_t err_size)
@@ -913,6 +946,7 @@ mdwn_viewer_run(const char *title, const struct mdwn_document *doc,
 
     memset(&viewer, 0, sizeof(viewer));
     viewer.doc = doc;
+    viewer.document_path = document_path;
     viewer.theme = theme;
     viewer.config = config;
     viewer.zoom = config->initial_zoom;

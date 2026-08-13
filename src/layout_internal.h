@@ -8,6 +8,8 @@ struct build_context {
     struct mdwn_layout *layout;
     struct mdwn_font_system *fonts;
     const struct mdwn_theme *theme;
+    SDL_Renderer *renderer;
+    const char *document_path;
     char *err;
     size_t err_size;
     int failed;
@@ -37,6 +39,8 @@ void mdwn_layout_add_rect_with_radius(struct build_context *ctx,
                                       float radius, struct mdwn_color color);
 struct mdwn_font *mdwn_layout_font_for_style(struct build_context *ctx,
                                              struct inline_style style);
+bool mdwn_layout_get_image(struct build_context *ctx, const char *source,
+                           SDL_Texture **texture, float *width, float *height);
 
 struct inline_style mdwn_layout_make_style(struct build_context *ctx,
                                            unsigned size_px,

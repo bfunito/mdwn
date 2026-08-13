@@ -22,7 +22,7 @@ else
 VERSION = $(BASE_VERSION)-dev
 endif
 
-PKGS     = sdl3 sdl3-ttf md4c fontconfig source-highlight tomlplusplus
+PKGS     = sdl3 sdl3-ttf sdl3-image md4c fontconfig source-highlight tomlplusplus
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L $(shell pkg-config --cflags $(PKGS))
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Wshadow

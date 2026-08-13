@@ -10,6 +10,7 @@
 
 struct mdwn_document;
 struct mdwn_font_system;
+struct mdwn_loaded_image;
 
 struct mdwn_code_block {
     struct mdwn_code_block *next;
@@ -21,6 +22,7 @@ struct mdwn_code_block {
 
 enum mdwn_draw_type {
     MDWN_DRAW_TEXT,
+    MDWN_DRAW_IMAGE,
     MDWN_DRAW_RECT,
     MDWN_DRAW_LINE,
 };
@@ -52,6 +54,12 @@ struct mdwn_draw_item {
         } text;
 
         struct {
+            SDL_Texture *texture;
+            const char *href;
+            float x, y, w, h;
+        } image;
+
+        struct {
             float x, y, w, h;
             float radius;
             struct mdwn_color color;
@@ -70,6 +78,7 @@ struct mdwn_layout {
     struct mdwn_draw_item *last;
     struct mdwn_code_block *first_code_block;
     struct mdwn_code_block *last_code_block;
+    struct mdwn_loaded_image *images;
     size_t text_count;
     float content_width;
     float content_height;
@@ -86,6 +95,7 @@ int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_document *doc,
                       struct mdwn_font_system *fonts,
                       const struct mdwn_theme *theme,
+                      SDL_Renderer *renderer, const char *document_path,
                       int viewport_width, int viewport_height,
                       char *err, size_t err_size);
 
