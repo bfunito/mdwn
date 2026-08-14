@@ -11,6 +11,7 @@
 
 struct mdwn_document;
 struct mdwn_font_system;
+struct mdwn_highlight_cache;
 struct mdwn_loaded_image;
 
 struct mdwn_code_block {
@@ -95,6 +96,8 @@ struct mdwn_layout_profile {
     size_t text_runs;
     size_t highlighted_lines;
     size_t highlighted_blocks;
+    size_t highlight_cache_hits;
+    size_t highlight_cache_misses;
     size_t images_loaded;
     size_t image_cache_hits;
 };
@@ -112,6 +115,7 @@ int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_theme *theme,
                       SDL_Renderer *renderer, const char *document_path,
                       int viewport_width, int viewport_height,
+                      struct mdwn_highlight_cache *highlights,
                       struct mdwn_layout_profile *profile,
                       char *err, size_t err_size);
 

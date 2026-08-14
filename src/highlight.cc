@@ -12,6 +12,9 @@
 #include <cctype>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 struct mdwn_highlighter;
 
@@ -31,17 +34,49 @@ public:
 };
 
 struct mdwn_highlighter {
-    srchilite::RegexRuleFactory rule_factory;
-    srchilite::LangDefManager lang_manager;
     std::unique_ptr<srchilite::FormatterManager> formatter_manager;
     std::unique_ptr<srchilite::SourceHighlighter> source_highlighter;
-    mdwn_highlight_callback callback;
+    int (*callback)(const char *, size_t, enum mdwn_highlight_type, void *);
     void *userdata;
     int failed;
 
-    mdwn_highlighter(const std::string &data_dir,
-                     const std::string &language_file);
+    mdwn_highlighter(srchilite::HighlightStatePtr state);
     void add_formatter(const char *name, enum mdwn_highlight_type type);
+    void reset();
+    int highlight(const char *line, size_t length,
+                  int (*fn)(const char *, size_t,
+                            enum mdwn_highlight_type, void *), void *data);
+};
+
+struct cached_run {
+    size_t line;
+    size_t offset;
+    size_t length;
+    enum mdwn_highlight_type type;
+};
+
+struct cached_block {
+    bool used = true;
+    bool highlighted = false;
+    std::vector<cached_run> runs;
+};
+
+struct mdwn_highlight_cache {
+    std::string data_dir;
+    srchilite::RegexRuleFactory rule_factory;
+    srchilite::LangDefManager lang_manager;
+    srchilite::LangMap lang_map;
+    std::unordered_map<std::string,
+                       std::unique_ptr<mdwn_highlighter>> highlighters;
+    std::unordered_map<std::string, cached_block> blocks;
+
+    mdwn_highlight_cache(const std::string &directory)
+        : data_dir(directory), lang_manager(&rule_factory),
+          lang_map(data_dir, "lang.map")
+    {
+    }
+
+    mdwn_highlighter *get_highlighter(const std::string &language);
 };
 
 void
@@ -55,9 +90,8 @@ token_formatter::format(const std::string &text,
         highlighter->failed = 1;
 }
 
-mdwn_highlighter::mdwn_highlighter(const std::string &data_dir,
-                                   const std::string &language_file)
-    : lang_manager(&rule_factory), callback(NULL), userdata(NULL), failed(0)
+mdwn_highlighter::mdwn_highlighter(srchilite::HighlightStatePtr state)
+    : callback(NULL), userdata(NULL), failed(0)
 {
     srchilite::FormatterPtr normal(
         new token_formatter(this, MDWN_HIGHLIGHT_NORMAL));
@@ -80,8 +114,7 @@ mdwn_highlighter::mdwn_highlighter(const std::string &data_dir,
     add_formatter("predef_var", MDWN_HIGHLIGHT_BUILTIN);
     add_formatter("predef_func", MDWN_HIGHLIGHT_BUILTIN);
 
-    source_highlighter.reset(new srchilite::SourceHighlighter(
-        lang_manager.getHighlightState(data_dir, language_file)));
+    source_highlighter.reset(new srchilite::SourceHighlighter(state));
     source_highlighter->setFormatterManager(formatter_manager.get());
 }
 
@@ -93,10 +126,39 @@ mdwn_highlighter::add_formatter(const char *name,
         name, srchilite::FormatterPtr(new token_formatter(this, type)));
 }
 
-static std::string
-mapped_language(const std::string &data_dir, const std::string &language)
+void
+mdwn_highlighter::reset()
 {
-    srchilite::LangMap lang_map(data_dir, "lang.map");
+    source_highlighter->clearStateStack();
+    source_highlighter->setCurrentState(source_highlighter->getMainState());
+}
+
+int
+mdwn_highlighter::highlight(
+    const char *line, size_t length,
+    int (*fn)(const char *, size_t, enum mdwn_highlight_type, void *),
+    void *data)
+{
+    callback = fn;
+    userdata = data;
+    failed = 0;
+
+    try {
+        source_highlighter->highlightParagraph(std::string(line, length));
+    } catch (...) {
+        callback = NULL;
+        userdata = NULL;
+        return -1;
+    }
+
+    callback = NULL;
+    userdata = NULL;
+    return failed ? -1 : 0;
+}
+
+static std::string
+mapped_language(srchilite::LangMap &lang_map, const std::string &language)
+{
     std::string mapped = lang_map.getMappedFileName(language);
 
     if (mapped.empty()) {
@@ -108,53 +170,154 @@ mapped_language(const std::string &data_dir, const std::string &language)
     return mapped;
 }
 
-extern "C" struct mdwn_highlighter *
-mdwn_highlighter_create(const char *language)
+mdwn_highlighter *
+mdwn_highlight_cache::get_highlighter(const std::string &language)
 {
-    if (!language || !language[0])
+    auto found = highlighters.find(language);
+    std::string language_file;
+    std::unique_ptr<mdwn_highlighter> highlighter;
+
+    if (found != highlighters.end())
+        return found->second.get();
+
+    language_file = mapped_language(lang_map, language);
+    if (language_file.empty())
         return NULL;
 
-    try {
-        std::string data_dir = srchilite::Settings::retrieveDataDir();
-        std::string language_file = mapped_language(data_dir, language);
+    highlighter.reset(new mdwn_highlighter(
+        lang_manager.getHighlightState(data_dir, language_file)));
+    found = highlighters.emplace(language, std::move(highlighter)).first;
+    return found->second.get();
+}
 
-        if (language_file.empty())
-            return NULL;
-        return new mdwn_highlighter(data_dir, language_file);
+struct record_context {
+    cached_block *block;
+    size_t line;
+    size_t offset;
+};
+
+static int
+record_run(const char *text, size_t length, enum mdwn_highlight_type type,
+           void *userdata)
+{
+    record_context *ctx = static_cast<record_context *>(userdata);
+    (void)text;
+    ctx->block->runs.push_back({ctx->line, ctx->offset, length, type});
+    ctx->offset += length;
+    return 0;
+}
+
+static int
+replay_block(const cached_block &block, const char *text,
+             mdwn_highlight_callback callback, void *userdata)
+{
+    for (const cached_run &run : block.runs) {
+        if (callback(run.line, text + run.offset, run.length,
+                     run.type, userdata) < 0)
+            return -1;
+    }
+    return 0;
+}
+
+extern "C" struct mdwn_highlight_cache *
+mdwn_highlight_cache_create(void)
+{
+    try {
+        return new mdwn_highlight_cache(
+            srchilite::Settings::retrieveDataDir());
     } catch (...) {
         return NULL;
     }
 }
 
 extern "C" void
-mdwn_highlighter_destroy(struct mdwn_highlighter *highlighter)
+mdwn_highlight_cache_destroy(struct mdwn_highlight_cache *cache)
 {
-    delete highlighter;
+    delete cache;
+}
+
+extern "C" void
+mdwn_highlight_cache_begin(struct mdwn_highlight_cache *cache)
+{
+    if (!cache)
+        return;
+    for (auto &entry : cache->blocks)
+        entry.second.used = false;
+}
+
+extern "C" void
+mdwn_highlight_cache_end(struct mdwn_highlight_cache *cache, int success)
+{
+    if (!cache || !success)
+        return;
+    for (auto entry = cache->blocks.begin(); entry != cache->blocks.end();) {
+        if (!entry->second.used)
+            entry = cache->blocks.erase(entry);
+        else
+            ++entry;
+    }
 }
 
 extern "C" int
-mdwn_highlighter_highlight(struct mdwn_highlighter *highlighter,
-                           const char *line, size_t length,
-                           mdwn_highlight_callback callback,
-                           void *userdata)
+mdwn_highlight_cache_highlight(struct mdwn_highlight_cache *cache,
+                               const char *language,
+                               const char *text, size_t length,
+                               mdwn_highlight_callback callback,
+                               void *userdata)
 {
-    if (!highlighter || !callback)
-        return -1;
-
-    highlighter->callback = callback;
-    highlighter->userdata = userdata;
-    highlighter->failed = 0;
+    if (!cache || !language || !language[0] || !callback)
+        return MDWN_HIGHLIGHT_UNAVAILABLE;
 
     try {
-        highlighter->source_highlighter->highlightParagraph(
-            std::string(line, length));
+        std::string key(language);
+        key.push_back('\0');
+        key.append(text, length);
+        auto found = cache->blocks.find(key);
+        int result = MDWN_HIGHLIGHT_HIT;
+
+        if (found == cache->blocks.end()) {
+            cached_block block;
+            mdwn_highlighter *highlighter =
+                cache->get_highlighter(language);
+
+            if (highlighter) {
+                size_t line = 0;
+                size_t start = 0;
+                record_context record = {&block, 0, 0};
+
+                block.highlighted = true;
+                highlighter->reset();
+                while (start < length || (start == 0 && length == 0)) {
+                    size_t end = start;
+
+                    while (end < length && text[end] != '\n')
+                        ++end;
+                    record.line = line++;
+                    record.offset = start;
+                    if (highlighter->highlight(text + start, end - start,
+                                               record_run, &record) < 0)
+                        return -1;
+                    if (record.offset != end)
+                        return -1;
+                    if (end >= length)
+                        break;
+                    start = end + 1;
+                    if (start == length)
+                        break;
+                }
+            }
+            found = cache->blocks.emplace(std::move(key),
+                                          std::move(block)).first;
+            result = MDWN_HIGHLIGHT_MISS;
+        }
+
+        found->second.used = true;
+        if (!found->second.highlighted)
+            return MDWN_HIGHLIGHT_UNAVAILABLE;
+        if (replay_block(found->second, text, callback, userdata) < 0)
+            return -1;
+        return result;
     } catch (...) {
-        highlighter->callback = NULL;
-        highlighter->userdata = NULL;
         return -1;
     }
-
-    highlighter->callback = NULL;
-    highlighter->userdata = NULL;
-    return highlighter->failed ? -1 : 0;
 }

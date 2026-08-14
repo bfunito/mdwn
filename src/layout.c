@@ -424,13 +424,15 @@ struct code_line_context {
     struct mdwn_code_block *code_block;
     float x;
     float baseline;
+    float first_baseline;
     float line_height;
     size_t column;
+    size_t line_index;
     uint64_t callback_ns;
 };
 
 static int
-add_highlighted_text(const char *text, size_t len,
+add_highlighted_text(size_t line_index, const char *text, size_t len,
                      enum mdwn_highlight_type type, void *userdata)
 {
     struct code_line_context *line = userdata;
@@ -439,6 +441,14 @@ add_highlighted_text(const char *text, size_t len,
     float advance;
     uint64_t start = line->ctx->profile ? SDL_GetTicksNS() : 0;
     int result = 0;
+
+    if (line->line_index != line_index) {
+        line->line_index = line_index;
+        line->x = line->code_block->content_x;
+        line->baseline = line->first_baseline
+                       + line->line_height * (float)line_index;
+        line->column = 0;
+    }
 
     expanded = expand_tabs(line->ctx, text, len, &expanded_len,
                            &line->column);
@@ -481,8 +491,8 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
     float baseline_offset;
     float box_height;
     float border = ctx->theme->code_border_width;
-    struct mdwn_highlighter *highlighter = NULL;
     struct mdwn_code_block *code_block;
+    bool highlighted = false;
 
     style.family = MDWN_FONT_MONO;
     text = gather_text(ctx, node, &len);
@@ -543,76 +553,71 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
         fmaxf(ctx->theme->border_radius - border, 0.0f),
         ctx->theme->code_background);
 
-    if (!html && node->as.code_block.language) {
+    if (!html && node->as.code_block.language && ctx->highlights) {
+        struct code_line_context line;
         uint64_t highlight_start = ctx->profile ? SDL_GetTicksNS() : 0;
-        highlighter = mdwn_highlighter_create(node->as.code_block.language);
-        if (ctx->profile)
-            ctx->profile->highlight_ns += SDL_GetTicksNS() - highlight_start;
+        uint64_t text_before = ctx->profile ? ctx->profile->text_ns : 0;
+        int result;
+
+        memset(&line, 0, sizeof(line));
+        line.ctx = ctx;
+        line.style = style;
+        line.code_block = code_block;
+        line.first_baseline = y + border + ctx->theme->code_block_padding
+                            + baseline_offset;
+        line.line_height = line_height;
+        line.line_index = SIZE_MAX;
+        result = mdwn_highlight_cache_highlight(
+            ctx->highlights, node->as.code_block.language, text, len,
+            add_highlighted_text, &line);
+        if (ctx->profile) {
+            uint64_t elapsed = SDL_GetTicksNS() - highlight_start;
+            uint64_t text_elapsed = ctx->profile->text_ns - text_before;
+
+            ctx->profile->highlight_ns += elapsed > line.callback_ns
+                ? elapsed - line.callback_ns : 0;
+            ctx->profile->highlight_emit_ns +=
+                line.callback_ns > text_elapsed
+                ? line.callback_ns - text_elapsed : 0;
+        }
+        if (result > MDWN_HIGHLIGHT_UNAVAILABLE) {
+            highlighted = true;
+            if (ctx->profile) {
+                ++ctx->profile->highlighted_blocks;
+                ctx->profile->highlighted_lines += lines;
+                if (result == MDWN_HIGHLIGHT_HIT)
+                    ++ctx->profile->highlight_cache_hits;
+                else
+                    ++ctx->profile->highlight_cache_misses;
+            }
+        } else if (result < 0 && ctx->failed)
+            return y;
     }
 
-    if (highlighter && ctx->profile)
-        ++ctx->profile->highlighted_blocks;
-
-    start = 0;
-    {
+    if (!highlighted) {
         size_t line_index = 0;
+
+        start = 0;
         while (start <= len && line_index < lines) {
             size_t end = start;
+            size_t expanded_len;
+            size_t column = 0;
+            char *expanded;
             float baseline = y + border + ctx->theme->code_block_padding
                 + baseline_offset + line_height * (float)line_index;
 
             while (end < len && text[end] != '\n')
                 ++end;
 
-            if (highlighter) {
-                struct code_line_context line;
-                uint64_t highlight_start;
-                uint64_t text_before;
-
-                line.ctx = ctx;
-                line.style = style;
-                line.code_block = code_block;
-                line.x = x + border + ctx->theme->code_block_padding;
-                line.baseline = baseline;
-                line.line_height = line_height;
-                line.column = 0;
-                line.callback_ns = 0;
-                highlight_start = ctx->profile ? SDL_GetTicksNS() : 0;
-                text_before = ctx->profile ? ctx->profile->text_ns : 0;
-                if (mdwn_highlighter_highlight(
-                        highlighter, text + start, end - start,
-                        add_highlighted_text, &line) < 0) {
-                    mdwn_highlighter_destroy(highlighter);
-                    highlighter = NULL;
-                    if (ctx->failed)
-                        return y;
-                }
-                if (ctx->profile) {
-                    uint64_t elapsed = SDL_GetTicksNS() - highlight_start;
-                    uint64_t text_elapsed = ctx->profile->text_ns - text_before;
-
-                    ctx->profile->highlight_ns += elapsed > line.callback_ns
-                        ? elapsed - line.callback_ns : 0;
-                    ctx->profile->highlight_emit_ns +=
-                        line.callback_ns > text_elapsed
-                        ? line.callback_ns - text_elapsed : 0;
-                    ++ctx->profile->highlighted_lines;
-                }
-            } else {
-                size_t expanded_len;
-                size_t column = 0;
-                char *expanded = expand_tabs(
-                    ctx, text + start, end - start, &expanded_len, &column);
-
-                if (!expanded)
-                    return y;
-                if (expanded_len &&
-                    add_direct_text(
-                        ctx, expanded, expanded_len, style,
-                        x + border + ctx->theme->code_block_padding,
-                        baseline, line_height, NULL, code_block) < 0)
-                    return y;
-            }
+            expanded = expand_tabs(
+                ctx, text + start, end - start, &expanded_len, &column);
+            if (!expanded)
+                return y;
+            if (expanded_len && add_direct_text(
+                    ctx, expanded, expanded_len, style,
+                    x + border + ctx->theme->code_block_padding,
+                    baseline, line_height, NULL, code_block) < 0)
+                return y;
 
             ++line_index;
             if (end >= len)
@@ -620,8 +625,6 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
             start = end + 1;
         }
     }
-
-    mdwn_highlighter_destroy(highlighter);
 
     return y + box_height + ctx->theme->block_spacing;
 }
@@ -1159,6 +1162,7 @@ mdwn_layout_build(struct mdwn_layout *layout,
                   const struct mdwn_theme *theme,
                   SDL_Renderer *renderer, const char *document_path,
                   int viewport_width, int viewport_height,
+                  struct mdwn_highlight_cache *highlights,
                   struct mdwn_layout_profile *profile,
                   char *err, size_t err_size)
 {
@@ -1184,10 +1188,12 @@ mdwn_layout_build(struct mdwn_layout *layout,
 
     if (profile)
         memset(profile, 0, sizeof(*profile));
+    mdwn_highlight_cache_begin(highlights);
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.layout = layout;
     ctx.fonts = fonts;
+    ctx.highlights = highlights;
     ctx.theme = theme;
     ctx.profile = profile;
     ctx.renderer = renderer;
@@ -1206,8 +1212,10 @@ mdwn_layout_build(struct mdwn_layout *layout,
     y = layout_block(&ctx, doc->root, content_x, content_width,
                      theme->top_margin, theme->text, false);
 
-    if (ctx.failed)
+    if (ctx.failed) {
+        mdwn_highlight_cache_end(highlights, 0);
         return -1;
+    }
 
     layout->content_height = y + theme->bottom_margin;
     if (layout->content_height < (float)viewport_height)
@@ -1238,5 +1246,6 @@ mdwn_layout_build(struct mdwn_layout *layout,
         layout->content_width = fmaxf(
             layout->content_width, right + content_x);
     }
+    mdwn_highlight_cache_end(highlights, 1);
     return 0;
 }

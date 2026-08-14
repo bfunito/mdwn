@@ -7,6 +7,7 @@
 struct build_context {
     struct mdwn_layout *layout;
     struct mdwn_font_system *fonts;
+    struct mdwn_highlight_cache *highlights;
     const struct mdwn_theme *theme;
     struct mdwn_layout_profile *profile;
     SDL_Renderer *renderer;

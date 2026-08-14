@@ -20,9 +20,16 @@ enum mdwn_highlight_type {
     MDWN_HIGHLIGHT_BUILTIN,
 };
 
-struct mdwn_highlighter;
+struct mdwn_highlight_cache;
 
-typedef int (*mdwn_highlight_callback)(const char *text, size_t length,
+enum mdwn_highlight_result {
+    MDWN_HIGHLIGHT_UNAVAILABLE,
+    MDWN_HIGHLIGHT_MISS,
+    MDWN_HIGHLIGHT_HIT,
+};
+
+typedef int (*mdwn_highlight_callback)(size_t line,
+                                      const char *text, size_t length,
                                       enum mdwn_highlight_type type,
                                       void *userdata);
 
@@ -30,12 +37,16 @@ typedef int (*mdwn_highlight_callback)(const char *text, size_t length,
 extern "C" {
 #endif
 
-struct mdwn_highlighter *mdwn_highlighter_create(const char *language);
-void mdwn_highlighter_destroy(struct mdwn_highlighter *highlighter);
-int mdwn_highlighter_highlight(struct mdwn_highlighter *highlighter,
-                               const char *line, size_t length,
-                               mdwn_highlight_callback callback,
-                               void *userdata);
+struct mdwn_highlight_cache *mdwn_highlight_cache_create(void);
+void mdwn_highlight_cache_destroy(struct mdwn_highlight_cache *cache);
+void mdwn_highlight_cache_begin(struct mdwn_highlight_cache *cache);
+void mdwn_highlight_cache_end(struct mdwn_highlight_cache *cache,
+                              int success);
+int mdwn_highlight_cache_highlight(struct mdwn_highlight_cache *cache,
+                                   const char *language,
+                                   const char *text, size_t length,
+                                   mdwn_highlight_callback callback,
+                                   void *userdata);
 
 #ifdef __cplusplus
 }

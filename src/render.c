@@ -4,6 +4,7 @@
 #include "document.h"
 #include "flavor.h"
 #include "font.h"
+#include "highlight.h"
 #include "layout.h"
 #include "markdown.h"
 #include "selection.h"
@@ -31,6 +32,7 @@ struct viewer {
     SDL_Renderer *renderer;
     TTF_TextEngine *text_engine;
     struct mdwn_font_system *fonts;
+    struct mdwn_highlight_cache *highlights;
     struct mdwn_document document;
     struct mdwn_layout layout;
     struct mdwn_selection selection;
@@ -89,9 +91,12 @@ report_layout_profile(const char *reason, uint64_t total,
     fprintf(stderr,
         "mdwn: profile layout work: %zu text runs, "
         "%zu lines in %zu highlighted blocks, "
+        "%zu highlight cache hits, %zu misses, "
         "%zu image loads, %zu image cache hits\n",
         profile->text_runs, profile->highlighted_lines,
-        profile->highlighted_blocks, profile->images_loaded,
+        profile->highlighted_blocks,
+        profile->highlight_cache_hits, profile->highlight_cache_misses,
+        profile->images_loaded,
         profile->image_cache_hits);
 }
 
@@ -695,6 +700,7 @@ rebuild_layout(struct viewer *viewer, const char *reason)
                           viewer->theme, viewer->renderer,
                           viewer->document_path,
                           viewer->width, viewer->height,
+                          viewer->highlights,
                           viewer->profile ? &profile : NULL,
                           viewer->err, viewer->err_size) < 0)
         return -1;
@@ -770,6 +776,7 @@ reload_document(struct viewer *viewer)
     if (mdwn_layout_build(&layout, &document, viewer->fonts, viewer->theme,
                           viewer->renderer, viewer->document_path,
                           viewer->width, viewer->height,
+                          viewer->highlights,
                           viewer->profile ? &profile : NULL,
                           error, sizeof(error)) < 0) {
         mdwn_layout_take_images(&viewer->layout, &layout);
@@ -1098,6 +1105,7 @@ viewer_cleanup(struct viewer *viewer)
 {
     mdwn_watcher_destroy(&viewer->watcher);
     mdwn_layout_destroy(&viewer->layout);
+    mdwn_highlight_cache_destroy(viewer->highlights);
     mdwn_document_destroy(&viewer->document);
     SDL_free(viewer->source);
     if (viewer->text_engine)
@@ -1223,6 +1231,7 @@ mdwn_viewer_run(const char *title, const char *document_path,
         viewer_cleanup(&viewer);
         return -1;
     }
+    viewer.highlights = mdwn_highlight_cache_create();
 
     if (rebuild_layout(&viewer, "initial") < 0) {
         viewer_cleanup(&viewer);
