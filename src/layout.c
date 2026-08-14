@@ -149,13 +149,17 @@ mdwn_layout_get_image(struct build_context *ctx, const char *source,
 {
     struct mdwn_loaded_image *image;
     char *path;
+    uint64_t start;
 
     if (!source || !source[0])
         return false;
 
     for (image = ctx->layout->images; image; image = image->next) {
-        if (strcmp(image->source, source) == 0)
+        if (strcmp(image->source, source) == 0) {
+            if (ctx->profile)
+                ++ctx->profile->image_cache_hits;
             goto found;
+        }
     }
 
     image = calloc(1, sizeof(*image));
@@ -172,7 +176,12 @@ mdwn_layout_get_image(struct build_context *ctx, const char *source,
     path = resolve_image_path(ctx, source);
     if (!path)
         goto out_of_memory;
+    start = ctx->profile ? SDL_GetTicksNS() : 0;
     image->texture = IMG_LoadTexture(ctx->renderer, path);
+    if (ctx->profile) {
+        ctx->profile->image_ns += SDL_GetTicksNS() - start;
+        ++ctx->profile->images_loaded;
+    }
     free(path);
     if (image->texture &&
         !SDL_GetTextureSize(image->texture, &image->width, &image->height)) {
@@ -317,12 +326,18 @@ add_direct_text(struct build_context *ctx,
     TTF_Text *object;
     float width;
     struct mdwn_draw_item *item;
+    uint64_t start;
 
     if (!font)
         return -1;
 
+    start = ctx->profile ? SDL_GetTicksNS() : 0;
     object = mdwn_font_create_text(font, text, len, &width, NULL,
                                    ctx->err, ctx->err_size);
+    if (ctx->profile) {
+        ctx->profile->text_ns += SDL_GetTicksNS() - start;
+        ++ctx->profile->text_runs;
+    }
     if (!object) {
         ctx->failed = 1;
         return -1;
@@ -411,6 +426,7 @@ struct code_line_context {
     float baseline;
     float line_height;
     size_t column;
+    uint64_t callback_ns;
 };
 
 static int
@@ -419,22 +435,34 @@ add_highlighted_text(const char *text, size_t len,
 {
     struct code_line_context *line = userdata;
     size_t expanded_len;
-    char *expanded = expand_tabs(line->ctx, text, len, &expanded_len,
-                                 &line->column);
+    char *expanded;
     float advance;
+    uint64_t start = line->ctx->profile ? SDL_GetTicksNS() : 0;
+    int result = 0;
 
-    if (!expanded)
-        return -1;
+    expanded = expand_tabs(line->ctx, text, len, &expanded_len,
+                           &line->column);
+
+    if (!expanded) {
+        result = -1;
+        goto out;
+    }
     if (!expanded_len)
-        return 0;
+        goto out;
 
     line->style.color = highlight_color(line->ctx->theme, type);
     if (add_direct_text(line->ctx, expanded, expanded_len, line->style,
                         line->x, line->baseline, line->line_height,
-                        &advance, line->code_block) < 0)
-        return -1;
+                        &advance, line->code_block) < 0) {
+        result = -1;
+        goto out;
+    }
     line->x += advance;
-    return 0;
+
+out:
+    if (line->ctx->profile)
+        line->callback_ns += SDL_GetTicksNS() - start;
+    return result;
 }
 
 static float
@@ -515,8 +543,15 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
         fmaxf(ctx->theme->border_radius - border, 0.0f),
         ctx->theme->code_background);
 
-    if (!html && node->as.code_block.language)
+    if (!html && node->as.code_block.language) {
+        uint64_t highlight_start = ctx->profile ? SDL_GetTicksNS() : 0;
         highlighter = mdwn_highlighter_create(node->as.code_block.language);
+        if (ctx->profile)
+            ctx->profile->highlight_ns += SDL_GetTicksNS() - highlight_start;
+    }
+
+    if (highlighter && ctx->profile)
+        ++ctx->profile->highlighted_blocks;
 
     start = 0;
     {
@@ -531,6 +566,8 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
 
             if (highlighter) {
                 struct code_line_context line;
+                uint64_t highlight_start;
+                uint64_t text_before;
 
                 line.ctx = ctx;
                 line.style = style;
@@ -539,6 +576,9 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                 line.baseline = baseline;
                 line.line_height = line_height;
                 line.column = 0;
+                line.callback_ns = 0;
+                highlight_start = ctx->profile ? SDL_GetTicksNS() : 0;
+                text_before = ctx->profile ? ctx->profile->text_ns : 0;
                 if (mdwn_highlighter_highlight(
                         highlighter, text + start, end - start,
                         add_highlighted_text, &line) < 0) {
@@ -546,6 +586,17 @@ layout_code_like_block(struct build_context *ctx, const struct mdwn_node *node,
                     highlighter = NULL;
                     if (ctx->failed)
                         return y;
+                }
+                if (ctx->profile) {
+                    uint64_t elapsed = SDL_GetTicksNS() - highlight_start;
+                    uint64_t text_elapsed = ctx->profile->text_ns - text_before;
+
+                    ctx->profile->highlight_ns += elapsed > line.callback_ns
+                        ? elapsed - line.callback_ns : 0;
+                    ctx->profile->highlight_emit_ns +=
+                        line.callback_ns > text_elapsed
+                        ? line.callback_ns - text_elapsed : 0;
+                    ++ctx->profile->highlighted_lines;
                 }
             } else {
                 size_t expanded_len;
@@ -1108,6 +1159,7 @@ mdwn_layout_build(struct mdwn_layout *layout,
                   const struct mdwn_theme *theme,
                   SDL_Renderer *renderer, const char *document_path,
                   int viewport_width, int viewport_height,
+                  struct mdwn_layout_profile *profile,
                   char *err, size_t err_size)
 {
     struct build_context ctx;
@@ -1130,10 +1182,14 @@ mdwn_layout_build(struct mdwn_layout *layout,
     layout->viewport_height = viewport_height;
     layout->content_height = 0.0f;
 
+    if (profile)
+        memset(profile, 0, sizeof(*profile));
+
     memset(&ctx, 0, sizeof(ctx));
     ctx.layout = layout;
     ctx.fonts = fonts;
     ctx.theme = theme;
+    ctx.profile = profile;
     ctx.renderer = renderer;
     ctx.document_path = document_path;
     ctx.err = err;

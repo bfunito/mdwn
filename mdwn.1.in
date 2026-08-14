@@ -42,6 +42,9 @@ Equivalent to
 .B \-\-no-config
 Ignore system, user, and local configuration files.
 .TP
+.B \-\-profile
+Report document parsing, layout, and rendering timings to standard error.
+.TP
 .BR \-h ", " \-\-help
 Print a summary of command-line options and exit.
 .TP

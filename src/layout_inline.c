@@ -120,6 +120,7 @@ flow_place_token(struct inline_flow *flow,
     float text_x;
     float baseline;
     struct mdwn_draw_item *item;
+    uint64_t start;
 
     if (len == 0 || flow->ctx->failed)
         return flow->ctx->failed ? -1 : 0;
@@ -131,10 +132,15 @@ flow_place_token(struct inline_flow *flow,
     if (!font)
         return -1;
 
+    start = flow->ctx->profile ? SDL_GetTicksNS() : 0;
     object = mdwn_font_create_text(
         font, text, len, &width,
         style.letter_spacing_em != 0.0f ? &cluster_count : NULL,
         flow->ctx->err, flow->ctx->err_size);
+    if (flow->ctx->profile) {
+        flow->ctx->profile->text_ns += SDL_GetTicksNS() - start;
+        ++flow->ctx->profile->text_runs;
+    }
     if (!object) {
         flow->ctx->failed = 1;
         return -1;

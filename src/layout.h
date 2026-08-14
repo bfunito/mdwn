@@ -6,6 +6,7 @@
 #include "theme.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 
 struct mdwn_document;
@@ -86,6 +87,18 @@ struct mdwn_layout {
     int viewport_height;
 };
 
+struct mdwn_layout_profile {
+    uint64_t highlight_ns;
+    uint64_t highlight_emit_ns;
+    uint64_t text_ns;
+    uint64_t image_ns;
+    size_t text_runs;
+    size_t highlighted_lines;
+    size_t highlighted_blocks;
+    size_t images_loaded;
+    size_t image_cache_hits;
+};
+
 float mdwn_layout_text_x(const struct mdwn_draw_item *item);
 
 void mdwn_layout_init(struct mdwn_layout *layout);
@@ -99,6 +112,7 @@ int mdwn_layout_build(struct mdwn_layout *layout,
                       const struct mdwn_theme *theme,
                       SDL_Renderer *renderer, const char *document_path,
                       int viewport_width, int viewport_height,
+                      struct mdwn_layout_profile *profile,
                       char *err, size_t err_size);
 
 #endif

@@ -13,6 +13,7 @@ struct options {
     const char *flavor;
     const char *theme;
     bool no_config;
+    bool profile;
 };
 
 static void
@@ -25,6 +26,7 @@ usage(FILE *stream)
         "  -f, --flavor NAME  markdown flavor (github, gitlab, or codeberg)\n"
         "  -t, --theme NAME   visual theme (light or dark; default: light)\n"
         "      --no-config    ignore system, user, and local configuration\n"
+        "      --profile      report document processing timings\n"
         "  -h, --help         show this help\n"
         "  -V, --version      show version\n");
 }
@@ -75,6 +77,11 @@ parse_options(struct options *options, int argc, char **argv)
 
         if (strcmp(arg, "--no-config") == 0) {
             options->no_config = true;
+            continue;
+        }
+
+        if (strcmp(arg, "--profile") == 0) {
+            options->profile = true;
             continue;
         }
 
@@ -203,6 +210,7 @@ main(int argc, char **argv)
     error[0] = '\0';
     if (mdwn_viewer_run(title, options.path, config.flavor,
                         theme, &config.viewer,
+                        options.profile,
                         error, sizeof(error)) < 0) {
         fprintf(stderr, "mdwn: %s\n", error[0] ? error : "viewer failed");
         goto out;

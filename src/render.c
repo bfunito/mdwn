@@ -48,8 +48,10 @@ struct viewer {
     float scroll_y;
     int width;
     int height;
+    bool profile;
     bool dirty;
     bool quit;
+    const char *profile_frame_reason;
     const char *pressed_link;
     struct mdwn_code_block *dragged_code_block;
     float code_drag_offset;
@@ -61,6 +63,37 @@ struct viewer {
 };
 
 static void set_sdl_error(struct viewer *, const char *);
+
+static double
+milliseconds(uint64_t ns)
+{
+    return (double)ns / 1000000.0;
+}
+
+static void
+report_layout_profile(const char *reason, uint64_t total,
+                      const struct mdwn_layout_profile *profile)
+{
+    uint64_t accounted = profile->highlight_ns + profile->highlight_emit_ns
+                       + profile->text_ns + profile->image_ns;
+    uint64_t other = total > accounted ? total - accounted : 0;
+
+    fprintf(stderr,
+        "mdwn: profile %s layout: %.3f ms "
+        "(highlight %.3f, styled runs %.3f, text %.3f, "
+        "images %.3f, other %.3f)\n",
+        reason, milliseconds(total), milliseconds(profile->highlight_ns),
+        milliseconds(profile->highlight_emit_ns),
+        milliseconds(profile->text_ns),
+        milliseconds(profile->image_ns), milliseconds(other));
+    fprintf(stderr,
+        "mdwn: profile layout work: %zu text runs, "
+        "%zu lines in %zu highlighted blocks, "
+        "%zu image loads, %zu image cache hits\n",
+        profile->text_runs, profile->highlighted_lines,
+        profile->highlighted_blocks, profile->images_loaded,
+        profile->image_cache_hits);
+}
 
 static float
 document_x(const struct viewer *viewer, float x)
@@ -643,8 +676,11 @@ layout_changed(struct viewer *viewer)
 }
 
 static int
-rebuild_layout(struct viewer *viewer)
+rebuild_layout(struct viewer *viewer, const char *reason)
 {
+    struct mdwn_layout_profile profile;
+    uint64_t start;
+
     if (viewer->selection.dragging || viewer->dragged_code_block)
         (void)SDL_CaptureMouse(false);
     viewer->dragged_code_block = NULL;
@@ -654,12 +690,19 @@ rebuild_layout(struct viewer *viewer)
         return -1;
     }
 
+    start = viewer->profile ? SDL_GetTicksNS() : 0;
     if (mdwn_layout_build(&viewer->layout, &viewer->document, viewer->fonts,
                           viewer->theme, viewer->renderer,
                           viewer->document_path,
                           viewer->width, viewer->height,
+                          viewer->profile ? &profile : NULL,
                           viewer->err, viewer->err_size) < 0)
         return -1;
+
+    if (viewer->profile) {
+        report_layout_profile(reason, SDL_GetTicksNS() - start, &profile);
+        viewer->profile_frame_reason = reason;
+    }
 
     layout_changed(viewer);
     return 0;
@@ -682,6 +725,17 @@ reload_document(struct viewer *viewer)
     char *source;
     char *old_source;
     size_t source_size;
+    struct mdwn_layout_profile profile;
+    uint64_t start = viewer->profile ? SDL_GetTicksNS() : 0;
+    uint64_t read_ns;
+    uint64_t parse_start;
+    uint64_t parse_ns;
+    uint64_t layout_start;
+    uint64_t layout_ns;
+    uint64_t cleanup_start;
+    uint64_t cleanup_ns;
+    uint64_t total;
+    uint64_t accounted;
 
     source = SDL_LoadFile(viewer->document_path, &source_size);
     if (!source) {
@@ -693,7 +747,9 @@ reload_document(struct viewer *viewer)
         SDL_free(source);
         return;
     }
+    read_ns = viewer->profile ? SDL_GetTicksNS() - start : 0;
 
+    parse_start = viewer->profile ? SDL_GetTicksNS() : 0;
     if (mdwn_document_init(&document) < 0) {
         SDL_free(source);
         report_reload_error("out of memory while creating document");
@@ -706,12 +762,15 @@ reload_document(struct viewer *viewer)
         report_reload_error(error[0] ? error : "could not parse markdown");
         return;
     }
+    parse_ns = viewer->profile ? SDL_GetTicksNS() - parse_start : 0;
 
     mdwn_layout_init(&layout);
     mdwn_layout_take_images(&layout, &viewer->layout);
+    layout_start = viewer->profile ? SDL_GetTicksNS() : 0;
     if (mdwn_layout_build(&layout, &document, viewer->fonts, viewer->theme,
                           viewer->renderer, viewer->document_path,
                           viewer->width, viewer->height,
+                          viewer->profile ? &profile : NULL,
                           error, sizeof(error)) < 0) {
         mdwn_layout_take_images(&viewer->layout, &layout);
         mdwn_layout_destroy(&layout);
@@ -720,6 +779,7 @@ reload_document(struct viewer *viewer)
         report_reload_error(error[0] ? error : "could not build layout");
         return;
     }
+    layout_ns = viewer->profile ? SDL_GetTicksNS() - layout_start : 0;
 
     old_document = viewer->document;
     viewer->document = document;
@@ -729,10 +789,27 @@ reload_document(struct viewer *viewer)
     viewer->source = source;
     viewer->source_size = source_size;
 
+    cleanup_start = viewer->profile ? SDL_GetTicksNS() : 0;
     layout_changed(viewer);
     mdwn_layout_destroy(&old_layout);
     mdwn_document_destroy(&old_document);
     SDL_free(old_source);
+    cleanup_ns = viewer->profile ? SDL_GetTicksNS() - cleanup_start : 0;
+
+    if (viewer->profile) {
+        total = SDL_GetTicksNS() - start;
+        accounted = read_ns + parse_ns + layout_ns + cleanup_ns;
+        fprintf(stderr,
+            "mdwn: profile reload: %.3f ms "
+            "(read+compare %.3f, parse %.3f, layout %.3f, "
+            "cleanup %.3f, other %.3f)\n",
+            milliseconds(total), milliseconds(read_ns),
+            milliseconds(parse_ns), milliseconds(layout_ns),
+            milliseconds(cleanup_ns),
+            milliseconds(total > accounted ? total - accounted : 0));
+        report_layout_profile("reload", layout_ns, &profile);
+        viewer->profile_frame_reason = "reload";
+    }
 }
 
 static void
@@ -820,7 +897,7 @@ handle_event(struct viewer *viewer, const SDL_Event *event)
         break;
 
     case SDL_EVENT_WINDOW_RESIZED:
-        if (rebuild_layout(viewer) < 0)
+        if (rebuild_layout(viewer, "resize") < 0)
             return -1;
         break;
 
@@ -1044,6 +1121,7 @@ mdwn_viewer_run(const char *title, const char *document_path,
                 const struct mdwn_flavor *flavor,
                 const struct mdwn_theme *theme,
                 const struct mdwn_viewer_config *config,
+                bool profile,
                 char *err, size_t err_size)
 {
     struct viewer viewer;
@@ -1058,6 +1136,7 @@ mdwn_viewer_run(const char *title, const char *document_path,
     viewer.flavor = flavor;
     viewer.theme = theme;
     viewer.config = config;
+    viewer.profile = profile;
     viewer.zoom = config->initial_zoom;
     viewer.raster_zoom = roundf(config->initial_zoom / RASTER_ZOOM_STEP)
                        * RASTER_ZOOM_STEP;
@@ -1145,15 +1224,24 @@ mdwn_viewer_run(const char *title, const char *document_path,
         return -1;
     }
 
-    if (rebuild_layout(&viewer) < 0) {
+    if (rebuild_layout(&viewer, "initial") < 0) {
         viewer_cleanup(&viewer);
         return -1;
     }
 
     while (!viewer.quit) {
         if (viewer.dirty) {
+            uint64_t frame_start = viewer.profile_frame_reason
+                ? SDL_GetTicksNS() : 0;
+
             if (render_frame(&viewer) < 0)
                 goto out;
+            if (viewer.profile_frame_reason) {
+                fprintf(stderr, "mdwn: profile %s frame: %.3f ms\n",
+                        viewer.profile_frame_reason,
+                        milliseconds(SDL_GetTicksNS() - frame_start));
+                viewer.profile_frame_reason = NULL;
+            }
             viewer.dirty = false;
         }
 
